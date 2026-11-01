@@ -1,0 +1,3 @@
+# Gelistirme/derleme bagimliliklari (build.bat bunu kurar; testler yalnizca standart unittest kullanir)
+-r requirements.txt
+pyinstaller>=6.0.0
