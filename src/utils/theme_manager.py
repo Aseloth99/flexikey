@@ -70,72 +70,72 @@ def _tick(p: QPainter, color: str, width: float) -> None:
     p.drawLine(8, 13, 14, 6)
 
 
-def create_theme_system_icon(is_selected: bool = False, color_hex: str | None = None) -> QIcon:
-    """Sistem teması ikonu: yarısı dolu daire (açık/koyu), vurgu renginde"""
-    color = color_hex or accent_hex()
-    pix = QPixmap(20, 20)
+_ICON_SCALE = 2  # menü simgeleri 2x çözünürlükte basılır (yüksek DPI'da keskin kalır)
+
+
+def _icon_canvas(size: int = 20) -> tuple[QPixmap, QPainter]:
+    pix = QPixmap(size * _ICON_SCALE, size * _ICON_SCALE)
     pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(_ICON_SCALE)
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.setPen(QPen(QColor(color), 1.6))
-    p.drawEllipse(QRectF(2.8, 2.8, 14.4, 14.4))
+    return pix, p
+
+
+# Tema simgeleri (Sistem / Koyu / Açık): vurguya değil nötr/anlamsal renge bağlıdır (güneş sarı, ay ve sistem gri).
+# Aynı çizim ve renkler MediaCompressor, TransferTCP ve Lumina'da da vardır; renk/is_selected parametreleri eski
+# çağrı imzaları bozulmasın diye durur ve yok sayılır.
+def create_theme_system_icon(is_selected: bool = False, color_hex: str | None = None) -> QIcon:
+    """Sistem teması ikonu: yarısı açık / yarısı koyu daire (nötr gri, ince kenarlıklı)"""
+    pix, p = _icon_canvas()
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QBrush(QColor(color)))
-    p.drawPie(QRectF(2.8, 2.8, 14.4, 14.4), 90 * 16, 180 * 16)
+    p.setBrush(QBrush(QColor("#6f6f6f")))
+    p.drawEllipse(QRectF(2.0, 2.0, 16.0, 16.0))
+    p.setBrush(QBrush(QColor("#f2f2f2")))
+    p.drawPie(QRectF(2.0, 2.0, 16.0, 16.0), 90 * 16, 180 * 16)
+    p.setPen(QPen(QColor("#8c8c8c"), 1.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QRectF(2.5, 2.5, 15.0, 15.0))
     p.end()
     return QIcon(pix)
 
 
 def create_theme_dark_icon(is_selected: bool = False, color_hex: str | None = None) -> QIcon:
-    """Koyu tema hilal ikonu (vurgu renginde; iki daire farkıyla gerçek hilal, zemin rengine bağlı değil)"""
-    color = color_hex or accent_hex()
-    pix = QPixmap(20, 20)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    """Koyu tema hilal ikonu (orta gri; iki daire farkıyla gerçek hilal, zemin rengine bağlı değil)"""
+    pix, p = _icon_canvas()
     moon = QPainterPath()
     moon.addEllipse(QRectF(3.0, 3.0, 14.0, 14.0))
     bite = QPainterPath()
-    bite.addEllipse(QRectF(7.4, 1.4, 12.0, 12.0))
+    bite.addEllipse(QRectF(7.6, 1.2, 12.0, 12.0))
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QBrush(QColor(color)))
+    p.setBrush(QBrush(QColor("#9a9a9a")))
     p.drawPath(moon.subtracted(bite))
     p.end()
     return QIcon(pix)
 
 
 def create_theme_light_icon(is_selected: bool = False, color_hex: str | None = None) -> QIcon:
-    """Açık tema güneş ikonu (vurgu renginde)"""
-    color = color_hex or accent_hex()
-    pix = QPixmap(20, 20)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color), 1.5)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    p.setBrush(QBrush(QColor(color)))
-    p.drawEllipse(QRectF(5.6, 5.6, 8.8, 8.8))
+    """Açık tema güneş ikonu (sarı)"""
+    pix, p = _icon_canvas()
+    p.setPen(QPen(QColor("#f59e0b"), 1.6))
+    p.setBrush(QBrush(QColor("#fbbf24")))
+    p.drawEllipse(QRectF(5.0, 5.0, 10.0, 10.0))
     for ang in range(0, 360, 45):
         p.save()
         p.translate(10, 10)
         p.rotate(ang)
-        p.drawLine(QPointF(0, -8.6), QPointF(0, -7.0))
+        p.drawLine(QPointF(0, -9), QPointF(0, -7))
         p.restore()
     p.end()
     return QIcon(pix)
 
 
-def create_accent_swatch_icon(color_hex: str, size: int = 18, is_selected: bool = False) -> QIcon:
-    """Belirtilen renkte yuvarlak temiz renk paleti ikonu"""
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(QPen(QColor(0, 0, 0, 50), 1))
+def create_accent_swatch_icon(color_hex: str, size: int = 16, is_selected: bool = False) -> QIcon:
+    """Belirtilen renkte yuvarlatılmış kare renk örneği (diğer uygulamalarla aynı şekil)"""
+    pix, p = _icon_canvas(size)
+    p.setPen(QPen(QColor(color_hex).darker(115), 1))
     p.setBrush(QBrush(QColor(color_hex)))
-    p.drawEllipse(1, 1, size - 2, size - 2)
+    p.drawRoundedRect(QRectF(1, 1, size - 2, size - 2), 4, 4)
     p.end()
     return QIcon(pix)
 
@@ -294,21 +294,17 @@ def apply_html_editor_style(editor, enabled: bool) -> None:
 def create_settings_gear_icon(color_hex: str | None = None) -> QIcon:
     """Dişli / ayarlar ikonu (renk verilmezse vurgu)"""
     color_hex = color_hex or accent_hex()
-    pix = QPixmap(20, 20)
-    pix.fill(Qt.GlobalColor.transparent)
-    pt = QPainter(pix)
-    pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-    color = QColor(color_hex)
+    pix, pt = _icon_canvas()
     pt.setPen(Qt.PenStyle.NoPen)
-    pt.setBrush(QBrush(color))
-    pt.drawEllipse(QRectF(6.2, 6.2, 7.6, 7.6))
+    pt.setBrush(QBrush(QColor(color_hex)))
+    pt.drawEllipse(QRectF(5.6, 5.6, 8.8, 8.8))
     for ang in range(0, 360, 45):
         pt.save()
         pt.translate(10, 10)
         pt.rotate(ang)
-        pt.drawRoundedRect(QRectF(-1.5, -8.4, 3.0, 4.2), 0.8, 0.8)
+        pt.drawRoundedRect(QRectF(-1.5, -8.6, 3.0, 4.6), 0.8, 0.8)
         pt.restore()
-    pt.setBrush(QBrush(QColor(15, 23, 42) if color.lightness() > 80 else QColor(248, 250, 252)))
+    pt.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)  # gerçek (saydam) göbek deliği
     pt.drawEllipse(QRectF(7.6, 7.6, 4.8, 4.8))
     pt.end()
     icon = QIcon()
@@ -366,12 +362,10 @@ def create_info_about_icon(color_hex: str | None = None) -> QIcon:
 def create_globe_icon(color_hex: str | None = None, size: int = 20) -> QIcon:
     """Dil menüsü için küre ikonu (renk verilmezse vurgu)"""
     color_hex = color_hex or accent_hex()
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pix, p = _icon_canvas(size)
     pen = QPen(QColor(color_hex), 1.5)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)
     r = (size - 4) / 2.0
