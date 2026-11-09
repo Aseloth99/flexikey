@@ -30,7 +30,9 @@ from src.gui.message_box import MessageBox
 
 from src.gui.toolbar_icons import strip_symbols, toolbar_icon
 from src.utils.helpers import format_shortcut_for_display, get_application_path
-from src.utils.settings_manager import DEFAULT_SETTINGS, register_saved_items
+from src.utils.settings_manager import (
+    DEFAULT_SETTINGS, exportable_records, is_locked_secret, is_secret_record, register_saved_items, secret_count,
+)
 from src.utils import startup
 
 try:
@@ -1368,6 +1370,55 @@ class CompactStackedWidget(QWidget):
         self.updateGeometry()
 
 
+class SecretRow(QWidget):
+    """Gizli (parola) değer satırı: noktalı giriş + Göster/Gizle + kısa açıklama. Kopyalama Qt tarafından zaten kapalıdır."""
+
+    def __init__(self, lang, parent=None):
+        super().__init__(parent)
+        self.lang = lang
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(8)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.edit = QLineEdit()
+        self.edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.edit.setPlaceholderText(t("secret_placeholder", lang))
+        self.edit.setMinimumHeight(38)
+        row.addWidget(self.edit, 1)
+        self.toggle_btn = QPushButton(t("secret_show", lang))
+        self.toggle_btn.setProperty('class', 'secondary')
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setMinimumHeight(38)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.toggled.connect(self._on_toggle)
+        row.addWidget(self.toggle_btn)
+        column.addLayout(row)
+        column.addWidget(make_hint_label(t("secret_tip", lang)))
+
+    def _on_toggle(self, shown):
+        self.edit.setEchoMode(QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password)
+        self.toggle_btn.setText(t("secret_hide" if shown else "secret_show", self.lang))
+
+    def hide_value(self):
+        self.toggle_btn.setChecked(False)
+
+    def text(self) -> str:
+        return self.edit.text()
+
+    def setText(self, value: str):
+        self.edit.setText(value)
+
+    def clear(self):
+        self.edit.clear()
+        self.hide_value()
+
+
+def _single_line(text: str) -> str:
+    return text.replace("\r", "").replace("\n", "")
+
+
 class HotkeyDialog(FramelessResizableDialog):
     """Kısayol diyalogu - Modern ve Rounded"""
     
@@ -1500,6 +1551,10 @@ class HotkeyDialog(FramelessResizableDialog):
         value_label.setObjectName("section_header")
         params_header.addWidget(value_label)
         params_header.addStretch()
+        self.secret_check = QCheckBox(t("secret_label", self.lang))
+        self.secret_check.setToolTip(t("secret_tip", self.lang))
+        self.secret_check.toggled.connect(self.on_secret_toggle)
+        params_header.addWidget(self.secret_check)
         self.rich_text_check = QCheckBox(t("rich_text_html", self.lang))
         self.rich_text_check.toggled.connect(self.on_rich_text_toggle)
         self.rich_text_check.setVisible(False)
@@ -1524,6 +1579,9 @@ class HotkeyDialog(FramelessResizableDialog):
         self.text_input.document().setDocumentMargin(8)
         text_layout.addWidget(self.text_input, 1)
         apply_html_editor_style(self.text_input, False)
+        self.secret_row = SecretRow(self.lang)
+        self.secret_row.setVisible(False)
+        text_layout.addWidget(self.secret_row)
         self.value_stack.addWidget(text_widget)
         
         # 2. Sistem Komutu (2 Sütunlu Komut Matrisi)
@@ -1897,6 +1955,19 @@ class HotkeyDialog(FramelessResizableDialog):
         
         self.on_action_type_changed(0)
     
+    def on_secret_toggle(self, checked):
+        """Gizli (parola) kipi: değer noktalı tek satıra taşınır; kapatılınca düz metin kutusuna döner."""
+        if checked:
+            self.rich_text_check.setChecked(False)
+            self.secret_row.setText(_single_line(self.text_input.toPlainText()))
+            self.text_input.clear()
+        else:
+            self.text_input.setPlainText(self.secret_row.text())
+            self.secret_row.clear()
+        self.text_input.setVisible(not checked)
+        self.secret_row.setVisible(checked)
+        self.rich_text_check.setEnabled(not checked)
+
     def on_rich_text_toggle(self, checked):
         """Rich text aktif/pasif"""
         apply_html_editor_style(self.text_input, checked)
@@ -1908,6 +1979,7 @@ class HotkeyDialog(FramelessResizableDialog):
     def on_action_type_changed(self, index):
         self.value_stack.setCurrentIndex(index)
         self.rich_text_check.setVisible(index == 0)
+        self.secret_check.setVisible(index == 0)
         if hasattr(self, "browse_btn"):
             self.browse_btn.setEnabled(index == 3)
         self.updateGeometry()
@@ -1979,7 +2051,10 @@ class HotkeyDialog(FramelessResizableDialog):
         is_rich = self.hotkey_data.get('is_rich', False)
         
         if action_type == 'text':
-            if is_rich:
+            if self.hotkey_data.get('is_secret') is True and not is_rich:
+                self.secret_check.setChecked(True)
+                self.secret_row.setText(value)
+            elif is_rich:
                 self.text_input.setHtml(value)
                 self.rich_text_check.setChecked(True)
             else:
@@ -2014,7 +2089,11 @@ class HotkeyDialog(FramelessResizableDialog):
         idx = self.value_stack.currentIndex()
         is_rich = False
         
-        if idx == 0:
+        is_secret = False
+        if idx == 0 and self.secret_check.isChecked():
+            is_secret = True
+            value = self.secret_row.text()
+        elif idx == 0:
             is_rich = self.rich_text_check.isChecked()
             if is_rich:
                 value = self.text_input.toHtml().strip()
@@ -2033,13 +2112,16 @@ class HotkeyDialog(FramelessResizableDialog):
         
         shortcut_str = self.shortcut_input.get_shortcut()
         
-        return {
+        data = {
             'shortcut': shortcut_str,
             'action_type': action_type,
             'action_value': value,
             'enabled': self.enabled_check.isChecked(),
             'is_rich': is_rich
         }
+        if is_secret:
+            data['is_secret'] = True
+        return data
 
 
 class ExpansionDialog(FramelessResizableDialog):
@@ -2166,11 +2248,16 @@ class ExpansionDialog(FramelessResizableDialog):
         rep_header_layout.addWidget(rep_label)
         rep_header_layout.addStretch()
 
+        self.secret_check = QCheckBox(t("secret_label", self.lang))
+        self.secret_check.setToolTip(t("secret_tip", self.lang))
+        self.secret_check.toggled.connect(self.on_secret_toggle)
+        rep_header_layout.addWidget(self.secret_check)
+
         self.rich_text_exp_check = QCheckBox(t("rich_text_html", self.lang))
         self.rich_text_exp_check.toggled.connect(self.on_rich_exp_toggle)
         rep_header_layout.addWidget(self.rich_text_exp_check)
 
-        paste_plain_btn = QPushButton(t("paste_plain", self.lang))
+        paste_plain_btn = self.paste_plain_btn = QPushButton(t("paste_plain", self.lang))
         paste_plain_btn.setProperty('class', 'secondary')
         paste_plain_btn.setToolTip(t("tip_paste_plain", self.lang))
         paste_plain_btn.setMaximumHeight(30)
@@ -2194,6 +2281,9 @@ class ExpansionDialog(FramelessResizableDialog):
         self.replacement_text.setToolTip(t("tip_expansion_text", self.lang))
         layout.addWidget(self.replacement_text, 1)
         apply_html_editor_style(self.replacement_text, False)
+        self.secret_row = SecretRow(self.lang)
+        self.secret_row.setVisible(False)
+        layout.addWidget(self.secret_row)
 
         body_layout.addWidget(content, 1)
 
@@ -2254,6 +2344,20 @@ class ExpansionDialog(FramelessResizableDialog):
             cursor.insertText(text)
             self.replacement_text.setTextCursor(cursor)
     
+    def on_secret_toggle(self, checked):
+        """Gizli (parola) kipi: değer noktalı tek satıra taşınır; kapatılınca düz metin kutusuna döner."""
+        if checked:
+            self.rich_text_exp_check.setChecked(False)
+            self.secret_row.setText(_single_line(self.replacement_text.toPlainText()))
+            self.replacement_text.clear()
+        else:
+            self.replacement_text.setPlainText(self.secret_row.text())
+            self.secret_row.clear()
+        self.replacement_text.setVisible(not checked)
+        self.secret_row.setVisible(checked)
+        self.rich_text_exp_check.setEnabled(not checked)
+        self.paste_plain_btn.setEnabled(not checked)
+
     def on_rich_exp_toggle(self, checked):
         """Rich text toggle"""
         apply_html_editor_style(self.replacement_text, checked)
@@ -2266,7 +2370,10 @@ class ExpansionDialog(FramelessResizableDialog):
         self.trigger_input.setText(self.expansion_data['trigger'])
         
         is_rich = self.expansion_data.get('is_rich', False)
-        if is_rich:
+        if self.expansion_data.get('is_secret') is True and not is_rich:
+            self.secret_check.setChecked(True)
+            self.secret_row.setText(self.expansion_data['replacement'])
+        elif is_rich:
             self.replacement_text.setHtml(self.expansion_data['replacement'])
             self.rich_text_exp_check.setChecked(True)
         else:
@@ -2275,18 +2382,24 @@ class ExpansionDialog(FramelessResizableDialog):
         self.enabled_check.setChecked(self.expansion_data.get('enabled', True))
     
     def get_data(self):
-        is_rich = self.rich_text_exp_check.isChecked()
-        if is_rich:
+        is_secret = self.secret_check.isChecked()
+        is_rich = False if is_secret else self.rich_text_exp_check.isChecked()
+        if is_secret:
+            replacement = self.secret_row.text()
+        elif is_rich:
             replacement = self.replacement_text.toHtml().strip()
         else:
             replacement = self.replacement_text.toPlainText().strip()
         
-        return {
+        data = {
             'trigger': self.trigger_input.text().strip(),
             'replacement': replacement,
             'enabled': self.enabled_check.isChecked(),
             'is_rich': is_rich
         }
+        if is_secret:
+            data['is_secret'] = True
+        return data
 
 
 class MainWindow(QMainWindow):
@@ -3335,10 +3448,15 @@ class MainWindow(QMainWindow):
             card = HotkeyCard()
             type_label = self.get_action_type_turkish(hotkey['action_type'])
             is_rich = bool(hotkey.get('is_rich', False) and hotkey['action_type'] == 'text')
-            if is_rich:
+            is_secret = hotkey['action_type'] == 'text' and is_secret_record(hotkey)
+            if is_secret:
+                type_label = f"🔒 {t('chip_secret', self.lang)}"
+            elif is_rich:
                 type_label = f"📝 {t('chip_rich_expansion', self.lang)}"
             value = hotkey.get('action_value', '')
-            if hotkey['action_type'] == 'command':
+            if is_secret:
+                primary = t("secret_mask", self.lang)
+            elif hotkey['action_type'] == 'command':
                 primary = self._format_command_display(value)
             elif hotkey['action_type'] == 'open_url':
                 primary = self._site_label(value) or value
@@ -3393,14 +3511,16 @@ class MainWindow(QMainWindow):
 
         base_chip = f"📝 {t('chip_expansion', self.lang)}"
         rich_chip = f"📝 {t('chip_rich_expansion', self.lang)}"
+        secret_chip = f"🔒 {t('chip_secret', self.lang)}"
         cards = []
         for exp in expansions:
             card = ExpansionCard()
             is_rich = bool(exp.get('is_rich', False))
+            is_secret = is_secret_record(exp)
             card.set_data(
                 exp['trigger'],
-                rich_chip if is_rich else base_chip,
-                self._short_value(self._expansion_plain_text(exp), 64),
+                secret_chip if is_secret else (rich_chip if is_rich else base_chip),
+                t("secret_mask", self.lang) if is_secret else self._short_value(self._expansion_plain_text(exp), 64),
                 exp.get('enabled', True),
                 is_rich=is_rich,
                 state_text=t("state_active" if exp.get('enabled', True) else "state_passive", self.lang),
@@ -3430,13 +3550,13 @@ class MainWindow(QMainWindow):
             self.settings_manager.add_hotkey(
                 data['shortcut'], data['action_type'],
                 data['action_value'], data['enabled'],
-                data.get('is_rich', False)
+                data.get('is_rich', False), is_secret=data.get('is_secret', False)
             )
             
             if data['enabled']:
                 self.hotkey_manager.add_hotkey(
                     data['shortcut'], data['action_type'], data['action_value'],
-                    data.get('is_rich', False)
+                    data.get('is_rich', False), secret=data.get('is_secret', False)
                 )
             
             self.load_hotkeys()
@@ -3460,7 +3580,7 @@ class MainWindow(QMainWindow):
             if new_data['enabled']:
                 self.hotkey_manager.add_hotkey(
                     new_data['shortcut'], new_data['action_type'], new_data['action_value'],
-                    new_data.get('is_rich', False)
+                    new_data.get('is_rich', False), secret=new_data.get('is_secret', False)
                 )
             
             self.load_hotkeys()
@@ -3498,10 +3618,11 @@ class MainWindow(QMainWindow):
             settings['hotkeys'][row] = hotkey
 
         if hotkey['enabled']:
-            self.hotkey_manager.add_hotkey(
-                hotkey['shortcut'], hotkey['action_type'], hotkey['action_value'],
-                hotkey.get('is_rich', False)
-            )
+            if not is_locked_secret(hotkey):
+                self.hotkey_manager.add_hotkey(
+                    hotkey['shortcut'], hotkey['action_type'], hotkey['action_value'],
+                    hotkey.get('is_rich', False), secret=is_secret_record(hotkey)
+                )
             self.notification_manager.success(t("hotkey_enabled", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])))
         else:
             self.hotkey_manager.remove_hotkey(hotkey['shortcut'])
@@ -3520,7 +3641,7 @@ class MainWindow(QMainWindow):
             
             self.settings_manager.add_expansion(
                 data['trigger'], data['replacement'], data['enabled'],
-                data.get('is_rich', False)
+                data.get('is_rich', False), is_secret=data.get('is_secret', False)
             )
             
             if data['enabled']:
@@ -3588,10 +3709,11 @@ class MainWindow(QMainWindow):
             settings['expansions'][row] = exp
 
         if exp['enabled']:
-            self.hotkey_manager.add_expansion(
-                exp['trigger'], exp['replacement'],
-                exp.get('is_rich', False)
-            )
+            if not is_locked_secret(exp):
+                self.hotkey_manager.add_expansion(
+                    exp['trigger'], exp['replacement'],
+                    exp.get('is_rich', False)
+                )
             self.notification_manager.success(t("expansion_enabled", self.lang).format(exp['trigger']))
         else:
             self.hotkey_manager.remove_expansion(exp['trigger'])
@@ -3825,7 +3947,8 @@ class MainWindow(QMainWindow):
             f"{t('help_expansion_step1', self.lang)}<br>"
             f"{t('help_expansion_step2', self.lang)}<br>"
             f"{t('help_expansion_step3', self.lang)}<br>"
-            f"{t('help_expansion_step4', self.lang)}</p>"
+            f"{t('help_expansion_step4', self.lang)}<br>"
+            f"{t('help_expansion_step5', self.lang)}</p>"
             f"<p><b>{t('help_section_shortcuts_title', self.lang)}</b><br>"
             f"{t('help_sc_add_hotkey', self.lang)}<br>"
             f"{t('help_sc_add_expansion', self.lang)}<br>"
@@ -3874,13 +3997,28 @@ class MainWindow(QMainWindow):
             # Mevcut ayarları yükle
             settings = self.settings_manager.load_settings()
             
+            # Gizli (parola) öğeler: değerleri dosyada açık yazılacağı için önce sorulur
+            chosen = []
+            if options['hotkeys']:
+                chosen += settings.get('hotkeys', [])
+            if options['expansions']:
+                chosen += settings.get('expansions', [])
+            include_secrets = False
+            secrets = secret_count(chosen)
+            if secrets:
+                reply = MessageBox.question(
+                    self, t("export_secret_title", self.lang),
+                    t("export_secret_ask", self.lang).format(secrets),
+                )
+                include_secrets = reply == MessageBox.StandardButton.Yes
+
             # Seçilen ayarları filtrele
             filtered_settings = {}
-            
+
             if options['hotkeys']:
-                filtered_settings['hotkeys'] = settings.get('hotkeys', [])
+                filtered_settings['hotkeys'] = exportable_records(settings.get('hotkeys', []), include_secrets)
             if options['expansions']:
-                filtered_settings['expansions'] = settings.get('expansions', [])
+                filtered_settings['expansions'] = exportable_records(settings.get('expansions', []), include_secrets)
             if options['theme']:
                 filtered_settings['theme'] = settings.get('theme', 'system')
             if options['behavior']:

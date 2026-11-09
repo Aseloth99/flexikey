@@ -30,6 +30,7 @@ uzun metne çevirir. Program sistem tepsisinde yaşar ve Windows ile birlikte ba
 - On grupta hazır sistem komutu (güç, ekran, uygulamalar, medya, ses, pencere ve masaüstü, tarayıcılar, tarayıcı
   gezintisi, hızlı erişim klasörleri, metin düzenleme). Geri alınamayan komutlar çalışmadan önce onay ister.
 - Düz ve zengin (HTML) metin genişletme; tetikleyiciyi yazıp **Boşluk** tuşuna basmanız yeterlidir.
+- Parola gibi gizli metinler: değer listede, bildirimlerde ve günlükte görünmez, ayar dosyasında şifreli saklanır.
 - Kısayolların, genişletmelerin ve ayarların yedeklenmesi ve aktarımı; içe aktarmadan önce riskli eylemleri işaretleyen
   önizleme.
 - Açık, koyu ya da sistem teması, on vurgu rengi, Türkçe ve İngilizce arayüz.
@@ -62,6 +63,8 @@ satırları işaretlenir.
 |---|---|
 | Düz | Tetikleyiciyi yazıp **Boşluk** tuşuna basınca tetikleyici silinir ve yerine metin yazılır. |
 | Zengin (HTML) | Kalın, italik, altı çizili ve renkli gibi biçimleri korur. Biçimli metin pano üzerinden yapıştırılır; önceki pano içeriğiniz sonra geri yüklenir. Yapıştırma başarısız olursa düz metin yazılır. |
+
+**Gizli (parola).** Parola ya da görünmemesi gereken başka bir değer için metin yazan bir kısayolda ya da düz bir genişletmede bu kutuyu işaretleyin. Değer diğer metinler gibi yazılır; ama listede noktalar görünür, bildirim yalnızca gizli bir metnin yazıldığını söyler ve günlüğe hiçbir zaman girmez. Diyalogda noktalı bir satır ve Göster düğmesi olarak durur. Windows'ta ayar dosyası değeri DPAPI ile, kullanıcı hesabınıza bağlı olarak şifreli saklar (diğer sistemlerde düz metin saklanır, yalnızca arayüzde gizlenir). Ayar dosyası başka bir hesapta açılırsa şifreli değerlere dokunulmaz ve öğeler okunamayan olarak listelenir. Dışa aktarırken gizli değerlerin dosyaya açık metin yazılıp yazılmayacağı sorulur; Hayır derseniz o öğeler dosyaya eklenmez.
 
 **Enter** tuşu hiçbir zaman tetikleyiciyi genişletmez; yalnızca kelimeyi bitirir. Zengin tetikleyiciler için FlexiKey yazılan
 karakterlerden kısa bir tampon tutar. Tampon yalnızca zengin tetikleyici varken tutulur, beş saniye yazılmazsa atılır ve klasik

@@ -22,6 +22,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from src.utils import secret_store
 from src.utils.helpers import (
     log_error, log_warning, resolve_user_config, APP_ID,
     get_application_path, atomic_write_bytes,
@@ -146,6 +147,89 @@ def _read_config_file(path: str, attempts: int = 3) -> Dict[str, Any]:
     return _parse_config_bytes(raw)
 
 
+# Gizli (parola vb.) kayıtlar: bellekte ve arayüzde düz metin, diskte DPAPI ile şifreli ("dpapi1:...").
+# Çözülemeyen değer (başka hesap/makine) kaydı silmez: şifreli hali bellekte 'secret_blob' olarak taşınır ve
+# yeniden yazılırken olduğu gibi geri konur; değer ise boş görünür.
+SECRET_FLAG = 'is_secret'
+LOCKED_BLOB = 'secret_blob'
+
+
+def _secret_slots(settings: Dict[str, Any]) -> Iterator[Tuple[Dict[str, Any], str]]:
+    """Gizli olabilecek (kayıt, değer anahtarı) çiftleri: düz metin yazan kısayollar ve düz genişletmeler."""
+    for record in settings.get('hotkeys') or []:
+        if isinstance(record, dict) and record.get('action_type') == 'text' and not record.get('is_rich'):
+            yield record, 'action_value'
+    for record in settings.get('expansions') or []:
+        if isinstance(record, dict) and not record.get('is_rich'):
+            yield record, 'replacement'
+
+
+def is_secret_record(record: Any) -> bool:
+    return isinstance(record, dict) and record.get(SECRET_FLAG) is True and not record.get('is_rich')
+
+
+def is_locked_secret(record: Any) -> bool:
+    """Değeri bu hesapta çözülemeyen gizli kayıt: yazılacak bir şey yok."""
+    if not is_secret_record(record) or not record.get(LOCKED_BLOB):
+        return False
+    return not record.get('replacement', record.get('action_value'))
+
+
+def secret_count(records: Any) -> int:
+    """Değeri okunabilen gizli kayıt sayısı (dışa aktarmadan önce kullanıcıya sorulur)."""
+    return sum(1 for r in records or [] if is_secret_record(r) and not is_locked_secret(r))
+
+
+def exportable_records(records: Any, include_secrets: bool) -> List[Dict[str, Any]]:
+    """Dosyaya yazılacak kayıtlar: gizliler yalnızca izin verilirse; çözülemeyenler ve iç alanlar hiç."""
+    out: List[Dict[str, Any]] = []
+    for record in records or []:
+        if is_secret_record(record) and (not include_secrets or is_locked_secret(record)):
+            continue
+        out.append({k: v for k, v in record.items() if k != LOCKED_BLOB} if isinstance(record, dict) else record)
+    return out
+
+
+def _seal(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Diske yazılacak kopya: gizli değerler şifrelenir (bu sistemde şifrelenemiyorsa olduğu gibi kalır)."""
+    sealed = copy.deepcopy(settings)
+    for record, key in _secret_slots(sealed):
+        blob = record.pop(LOCKED_BLOB, None)
+        if record.get(SECRET_FLAG) is not True:
+            continue
+        value = record.get(key, '')
+        if value:
+            token = secret_store.protect(value)
+            if token:
+                record[key] = token
+        elif blob:
+            record[key] = blob
+    return sealed
+
+
+def _unseal(settings: Dict[str, Any]) -> int:
+    """Okunan ayarlardaki gizli değerleri çözer (yerinde). Çözülemeyenlerin sayısını döndürür."""
+    locked = 0
+    for record, key in _secret_slots(settings):
+        if record.get(SECRET_FLAG) is not True or not secret_store.is_blob(record.get(key)):
+            continue
+        plain = secret_store.unprotect(record[key])
+        if plain is None:
+            record[LOCKED_BLOB] = record[key]
+            record[key] = ''
+            locked += 1
+        else:
+            record[key] = plain
+    return locked
+
+
+def _secret_flag(record: Dict[str, Any], can_be_secret: bool) -> Dict[str, Any]:
+    """Temizlenmiş kayda eklenecek gizlilik işareti (yalnızca düz metin yazan kayıtlarda geçerlidir)."""
+    if can_be_secret and record.get(SECRET_FLAG) is True and not record.get('is_rich'):
+        return {SECRET_FLAG: True}
+    return {}
+
+
 def _clean_hotkey(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
         'shortcut': record['shortcut'].strip(),
@@ -153,6 +237,7 @@ def _clean_hotkey(record: Dict[str, Any]) -> Dict[str, Any]:
         'action_value': record['action_value'],
         'enabled': bool(record.get('enabled', True)),
         'is_rich': bool(record.get('is_rich', False)),
+        **_secret_flag(record, record['action_type'] == 'text'),
     }
 
 
@@ -162,6 +247,7 @@ def _clean_expansion(record: Dict[str, Any]) -> Dict[str, Any]:
         'replacement': record['replacement'],
         'enabled': bool(record.get('enabled', True)),
         'is_rich': bool(record.get('is_rich', False)),
+        **_secret_flag(record, True),
     }
 
 
@@ -249,9 +335,11 @@ def register_saved_items(settings: Dict[str, Any], hotkey_manager: Any) -> Dict[
             reason = validate_hotkey_record(record)
             if reason is not None:
                 raise ValueError(reason)
+            if is_locked_secret(record):
+                continue
             hotkey_manager.add_hotkey(
                 record['shortcut'], record['action_type'], record['action_value'],
-                record.get('is_rich', False),
+                record.get('is_rich', False), **({'secret': True} if is_secret_record(record) else {}),
             )
             counts['hotkeys'] += 1
         except Exception as exc:
@@ -266,6 +354,8 @@ def register_saved_items(settings: Dict[str, Any], hotkey_manager: Any) -> Dict[
             reason = validate_expansion_record(record)
             if reason is not None:
                 raise ValueError(reason)
+            if is_locked_secret(record):
+                continue
             hotkey_manager.add_expansion(
                 record['trigger'], record['replacement'], record.get('is_rich', False),
             )
@@ -465,6 +555,10 @@ class SettingsManager:
                     log_error(f"Geçersiz '{key}' kaydı atlandı (#{index}): {reason}")
             settings[key] = valid
 
+        locked = _unseal(settings)
+        if locked and not quiet:
+            self._warn('secret_locked', str(locked))
+
         if dropped_total and not quiet:
             # Sonraki kayıt bu kayıtları diskten silecek; önce bir kopyasını sakla.
             self._quarantine(source, 'invalid', move=False)
@@ -474,7 +568,7 @@ class SettingsManager:
     # ------------------------------------------------------------------ kaydetme
     def _write(self, settings: Dict[str, Any]) -> None:
         # Önce bellekte serileştir: serileştirme hatası mevcut dosyaya hiç dokunmaz.
-        payload = json.dumps(settings, indent=4, ensure_ascii=False).encode('utf-8')
+        payload = json.dumps(_seal(settings), indent=4, ensure_ascii=False).encode('utf-8')
         atomic_write_bytes(
             self.settings_file, payload,
             backup_path=self.backup_file, backup_validator=_is_valid_config_bytes,
@@ -512,7 +606,8 @@ class SettingsManager:
             settings.update(values)
 
     # ------------------------------------------------------------------ kısayollar
-    def add_hotkey(self, shortcut: str, action_type: str, action_value: str, enabled: bool = True, is_rich: bool = False):
+    def add_hotkey(self, shortcut: str, action_type: str, action_value: str, enabled: bool = True, is_rich: bool = False,
+                   is_secret: bool = False):
         """Yeni kısayol ekle"""
         hotkey = {
             'shortcut': shortcut,
@@ -521,6 +616,8 @@ class SettingsManager:
             'enabled': enabled,
             'is_rich': is_rich
         }
+        if is_secret and action_type == 'text' and not is_rich:
+            hotkey[SECRET_FLAG] = True
         with self.transaction() as settings:
             settings['hotkeys'].append(hotkey)
 
@@ -538,7 +635,8 @@ class SettingsManager:
                     break
 
     # ------------------------------------------------------------------ genişletmeler
-    def add_expansion(self, trigger: str, replacement: str, enabled: bool = True, is_rich: bool = False):
+    def add_expansion(self, trigger: str, replacement: str, enabled: bool = True, is_rich: bool = False,
+                      is_secret: bool = False):
         """Yeni metin genişletme ekle"""
         expansion = {
             'trigger': trigger,
@@ -546,6 +644,8 @@ class SettingsManager:
             'enabled': enabled,
             'is_rich': is_rich
         }
+        if is_secret and not is_rich:
+            expansion[SECRET_FLAG] = True
         with self.transaction() as settings:
             settings['expansions'].append(expansion)
 

@@ -703,6 +703,8 @@ class HotkeyManager(QObject):
         self.which = shutil.which   # PATH araması (testlerde değiştirilebilir)
         self.backend = backend if backend is not None else input_backend.create_backend(platform)
         self.worker = HotkeyWorker(backend=self.backend, clipboard=clipboard, platform=platform)
+        # Değeri gizli olan (parola) kısayollar: bildirimde ve günlükte değer asla gösterilmez
+        self._secret_shortcuts: set = set()
         self.worker.action_triggered.connect(
             self.execute_action,
             Qt.ConnectionType.QueuedConnection
@@ -888,9 +890,12 @@ class HotkeyManager(QObject):
         except Exception as e:
             log_error("HotkeyManager durdurma hatasi", e)
 
-    def add_hotkey(self, shortcut: str, action_type: str, action_value: str, is_rich: bool = False):
+    def add_hotkey(self, shortcut: str, action_type: str, action_value: str, is_rich: bool = False,
+                   secret: bool = False):
         if shortcut in self.worker.hotkeys:
             self.remove_hotkey(shortcut)
+        if secret and action_type == 'text' and not is_rich:
+            self._secret_shortcuts.add(shortcut)
 
         normalized = self.worker._normalize_shortcut(shortcut)
         parsed = parse_win_hotkey(normalized) if platform_utils.is_windows(self._platform) else None
@@ -909,6 +914,7 @@ class HotkeyManager(QObject):
         self.worker.add_hotkey(shortcut, action_type, action_value, is_rich)
 
     def remove_hotkey(self, shortcut: str):
+        self._secret_shortcuts.discard(shortcut)
         if self._win_hotkeys.has(shortcut):
             self._win_hotkeys.unregister(shortcut)
         self.worker.remove_hotkey(shortcut)
@@ -966,7 +972,10 @@ class HotkeyManager(QObject):
                     lambda text=plain_text: self.backend.write(text),
                     on_error=self._injection_error,
                 )
-                self.action_executed.emit('text', t('notif_written', self.lang).format(action_value[:50]))
+                if shortcut in self._secret_shortcuts:
+                    self.action_executed.emit('text', t('notif_written_secret', self.lang))
+                else:
+                    self.action_executed.emit('text', t('notif_written', self.lang).format(action_value[:50]))
 
             elif action_type == 'command':
                 if not self._execute_system_command(action_value):

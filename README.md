@@ -30,6 +30,7 @@ formatted. The app lives in the system tray and can start with Windows.
 - Built-in system commands in ten groups (power, screen, apps, media, volume, windows and desktops, browsers, browser
   navigation, quick-access folders, text editing). Commands that cannot be undone ask for confirmation first.
 - Text expansion for plain text and for rich (HTML) text, triggered by typing the trigger and pressing **Space**.
+- Secret text for passwords: the value never shows in the lists, notifications or log, and the settings file holds it encrypted.
 - Backup and transfer of shortcuts, expansions and settings, with a preview that flags risky actions before import.
 - Light, dark or system theme, ten accent colors, Turkish and English interface.
 - Settings are written atomically; a damaged settings file is set aside and the last good copy is restored.
@@ -60,6 +61,8 @@ Imported shortcuts are previewed first, and destructive commands, program launch
 |---|---|
 | Plain | The trigger is erased and replaced by the text as soon as you type the trigger and press **Space**. |
 | Rich (HTML) | Keeps formatting such as bold, italic, underline and color. The formatted text is pasted through the clipboard; your previous clipboard contents are restored afterwards. If pasting fails, plain text is typed instead. |
+
+**Secret (password).** Tick it on a text shortcut or a plain expansion for a password or any other value that must not be seen. The value is typed like any other text, but the list shows dots, notifications say only that a secret was typed, and the log never holds it. In the dialog it is a dotted line with a Show button. On Windows the settings file stores it encrypted with DPAPI, bound to your user account (on other systems it is stored as plain text and only hidden in the interface). A settings file opened by another account keeps the encrypted values untouched and lists the items as unreadable. Exporting asks whether the secret values may be written to the file as plain text; answering No leaves those items out.
 
 Pressing **Enter** never expands a trigger; it only ends the word. For rich triggers FlexiKey keeps a short buffer of the
 typed characters. The buffer is only kept while rich triggers exist, it is discarded after five seconds without typing, and
