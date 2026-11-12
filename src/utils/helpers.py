@@ -185,8 +185,9 @@ def format_speed(speed_mbps: float) -> str:
 
 
 def get_log_path() -> str:
-    """Uygulama log dosyasi yolu (kullanıcı veri dizini; macOS'ta ~/Library/Logs)"""
-    log_dir = get_user_log_dir()
+    """Uygulama log dosyasi yolu (kullanıcı veri dizini; macOS'ta ~/Library/Logs). FLEXIKEY_LOG_DIR verilmişse
+    oraya yazılır (testler kullanıcının gerçek günlüğünü kirletmesin diye)."""
+    log_dir = os.environ.get("FLEXIKEY_LOG_DIR") or get_user_log_dir()
     try:
         platform_utils.ensure_private_dir(log_dir)
     except OSError:
