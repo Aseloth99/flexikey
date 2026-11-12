@@ -4,8 +4,8 @@
 # Surum, updater.UpdateChecker.CURRENT_VERSION ile ayni olmali (tests/test_packaging.py denetler).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 1, 0),
-    prodvers=(1, 0, 1, 0),
+    filevers=(1, 0, 2, 0),
+    prodvers=(1, 0, 2, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -20,12 +20,12 @@ VSVersionInfo(
         '040904B0',
         [StringStruct('CompanyName', 'FlexiKey'),
         StringStruct('FileDescription', 'FlexiKey - keyboard shortcuts and text expansion'),
-        StringStruct('FileVersion', '1.0.1.0'),
+        StringStruct('FileVersion', '1.0.2.0'),
         StringStruct('InternalName', 'FlexiKey'),
         StringStruct('LegalCopyright', '(c) 2026 FlexiKey'),
         StringStruct('OriginalFilename', 'FlexiKey.exe'),
         StringStruct('ProductName', 'FlexiKey'),
-        StringStruct('ProductVersion', '1.0.1.0')])
+        StringStruct('ProductVersion', '1.0.2.0')])
       ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
