@@ -2680,11 +2680,43 @@ class MainWindow(QMainWindow):
         apply_window_rounding(self)
         if hasattr(self, 'app_chrome'):
             apply_rounded_mask(self.app_chrome, 12)
+        QTimer.singleShot(0, self._settle_geometry)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'app_chrome'):
             apply_rounded_mask(self.app_chrome, 12)
+
+    def event(self, event):
+        # Ekran ölçeği değişti (ör. %150'de açılmış oturuma %100'lük RDP ile bağlanıldı): boyut sonra yeniden oturtulur
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            QTimer.singleShot(0, self._settle_geometry)
+            QTimer.singleShot(500, self._settle_geometry)
+        return super().event(event)
+
+    def _settle_geometry(self):
+        """Pencere asgari ölçüsünün altında ya da ekran dışında kalmasın.
+
+        Ölçek değişirken (RDP bağlantısı, başka ölçekli ekrana geçiş; pencere tepsideyken de olabilir) pencere eski
+        boyutunda kalıp asgari genişliğin altına düşebiliyordu: başlık menüsü ve düğme metinleri kesik, kartlar tek
+        sütun. Asgari genişlik yeniden hesaplanır, pencere gerekirse büyütülür ve görünür alana alınır.
+        """
+        if not self.isVisible() or self.isMaximized() or self.isFullScreen() or self.isMinimized():
+            return
+        self._fit_min_width()
+        # yalnız büyütülür; ekrandan küçültmek içeriği yine sıkıştırırdı
+        need = self.size().expandedTo(self.minimumSize()).expandedTo(self.minimumSizeHint())
+        screen = self.screen()
+        avail = screen.availableGeometry() if screen is not None else None
+        if need != self.size():
+            self.resize(need)
+        if avail is not None:
+            frame = self.frameGeometry()
+            # sol üst köşe her zaman görünür kalır (pencere ekrandan büyükse sağı/altı taşar, başlık çubuğu taşmaz)
+            x = max(avail.left(), min(frame.x(), avail.right() - frame.width() + 1))
+            y = max(avail.top(), min(frame.y(), avail.bottom() - frame.height() + 1))
+            if (x, y) != (frame.x(), frame.y()):
+                self.move(x, y)
 
     def _hit_resize_edges(self, pos):
         """Köşelerde geniş çapraz alan; kenarlarda ince şerit."""

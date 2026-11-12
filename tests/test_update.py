@@ -300,7 +300,7 @@ class MandatoryUpdateFlowTests(unittest.TestCase):
         args, kwargs = self.app.update_installer.install_update.call_args
         self.assertEqual(args, (r"C:\Temp\FlexiKey_Update.pkg",))
         self.assertEqual(kwargs["visible"], False)
-        self.assertEqual(kwargs["old_version"], "1.0.0")
+        self.assertEqual(kwargs["old_version"], updater.UpdateChecker.CURRENT_VERSION)
         self.app.tray_manager.tray_icon.showMessage.assert_called_once()
 
     def test_install_complete_quits_cleanly_and_marks_updating(self):

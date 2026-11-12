@@ -91,11 +91,13 @@ class VersionTests(unittest.TestCase):
             from PyInstaller.utils.win32 import versioninfo
         except Exception:
             self.skipTest("PyInstaller kurulu degil")
+        from src.utils.updater import UpdateChecker
         info = versioninfo.load_version_info_from_text_file(str(ROOT / "file_version_info.txt"))
-        # 1.0.0.0 -> MS=(1<<16)|0, LS=(0<<16)|0
-        self.assertEqual((info.ffi.fileVersionMS, info.ffi.fileVersionLS), (1 << 16, 0))
+        a, b, c = (int(p) for p in UpdateChecker.CURRENT_VERSION.split("."))
+        # x.y.z.0 -> MS=(x<<16)|y, LS=(z<<16)|0
+        self.assertEqual((info.ffi.fileVersionMS, info.ffi.fileVersionLS), ((a << 16) | b, c << 16))
         strings = {s.name: s.val for s in info.kids[0].kids[0].kids}
-        self.assertEqual(strings["FileVersion"], "1.0.0.0")
+        self.assertEqual(strings["FileVersion"], f"{a}.{b}.{c}.0")
 
 
 class RequirementsTests(unittest.TestCase):

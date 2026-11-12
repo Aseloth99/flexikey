@@ -164,7 +164,8 @@ class PosixPermissionTests(unittest.TestCase):
     def test_log_file_and_dir_are_private(self):
         helpers._LOGGER = None
         self.addCleanup(setattr, helpers, "_LOGGER", None)
-        with mock.patch.object(helpers, "get_user_log_dir", return_value=os.path.join(self.tmp, "logs")):
+        env = {k: v for k, v in os.environ.items() if k != "FLEXIKEY_LOG_DIR"}
+        with mock.patch.dict(os.environ, env, clear=True),                 mock.patch.object(helpers, "get_user_log_dir", return_value=os.path.join(self.tmp, "logs")):
             helpers.write_log("deneme satiri")
             logger = helpers.get_logger()
             for handler in list(logger.handlers):

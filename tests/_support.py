@@ -5,9 +5,12 @@ from __future__ import annotations
 import os
 import pathlib
 import sys
+import tempfile
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Testlerin günlük satırları kullanıcının gerçek günlüğüne (%LOCALAPPDATA%\FlexiKey\logs) değil geçici klasöre gider
+os.environ.setdefault("FLEXIKEY_LOG_DIR", tempfile.mkdtemp(prefix="flexikey-test-logs-"))
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

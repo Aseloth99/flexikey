@@ -106,7 +106,8 @@ class StartupGuardTests(unittest.TestCase):
 
     def test_rolled_back_version_relaunches_the_previous_one_and_exits(self):
         guard, spawn, exited = self.run_guard(self_update.Guard.ROLLED_BACK)
-        guard.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", "1.0.0")
+        from src.utils.updater import UpdateChecker
+        guard.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", UpdateChecker.CURRENT_VERSION)
         spawn.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", ["--minimized"])
         self.app._instance_lock.unlock.assert_called_once()   # geri gelen sürüm kilidi alabilsin
         self.assertTrue(exited)
