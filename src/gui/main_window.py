@@ -1073,11 +1073,17 @@ class SettingsDialog(QDialog):
         self.update_status.setObjectName("update_status")
         from src.gui.update_check_ui import UpdateCheckAnimator
         self.update_check = UpdateCheckAnimator(self.check_update_btn, self.update_status, self)
-        pending_version = getattr(self.parent_window, "update_version", "")
-        if pending_version:  # sessiz denetim zaten yeni sürüm bulmuş
-            self.update_status.setText(t("update_new_version", self.lang).format(version=pending_version))
         up_btn_row.addWidget(self.update_status)
+        # Yeni sürüm varsa durum metni yerine bu düğme görünür; güncelleme penceresini açar (tıklamak kurmaz)
+        self.update_open_btn = QPushButton()
+        self.update_open_btn.setProperty("class", "primary")
+        polish_widget(self.update_open_btn)
+        self.update_open_btn.setMinimumHeight(36)
+        self.update_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_open_btn.clicked.connect(self._open_pending_update)
+        up_btn_row.addWidget(self.update_open_btn)
         up_btn_row.addStretch()
+        self.show_pending_update(getattr(self.parent_window, "update_version", ""))  # sessiz denetim zaten bulmuş olabilir
         update_layout.addLayout(up_btn_row)
         
         if self.update_checker:
@@ -1260,16 +1266,34 @@ class SettingsDialog(QDialog):
         self.update_check.start(t("checking_updates", self.lang))
         self.update_checker.check_for_updates(show_message=True)
     
+    def show_pending_update(self, version: str):
+        """Yeni sürüm varsa "↑ Güncelle · vX" düğmesi durum metninin yerini alır (PulseTray'deki gibi)."""
+        version = str(version or "")
+        self.update_open_btn.setVisible(bool(version))
+        self.update_status.setVisible(not version)
+        if version:
+            self.update_open_btn.setText("↑  " + t("update_pill", self.lang).format(version=version))
+            self.update_open_btn.setToolTip(t("update_pill_tip", self.lang).format(version=version))
+
+    def _open_pending_update(self):
+        """Ayarlar kapanır (kaydedilmemiş değişiklikler uygulanmaz) ve güncelleme penceresi açılır: Ayarlar kalıcı
+        (modal) olduğundan üstünde açılan güncelleme penceresi tıklanamazdı."""
+        window = self.parent_window
+        self.reject()
+        if window is not None:
+            QTimer.singleShot(0, window.show_pending_update)
+
     def on_check_complete(self, has_update):
         self._checking_updates = False
         from src.utils.updater import UpdateChecker
         version = UpdateChecker().get_current_version()
         if has_update:
             pending = getattr(self.parent_window, "update_version", "")
-            self.update_check.finish(
-                "new",
-                t("update_new_version", self.lang).format(version=pending) if pending else t("update_available", self.lang),
-            )
+            if pending:
+                self.update_check.cancel()
+                self.show_pending_update(pending)
+                return
+            self.update_check.finish("new", t("update_available", self.lang))
         else:
             self.update_check.finish("ok", t("up_to_date", self.lang).format(version))
     
@@ -2981,15 +3005,9 @@ class MainWindow(QMainWindow):
         
         layout.addStretch(1)
         
-        # Güncelleme düğmesi: sessiz denetim yeni sürüm bulursa görünür (pop-up yok)
+        # Bekleyen güncellemenin sürümü: başlıkta düğme yok (menüyü sıkıştırıyordu); Ayarlar > Güncellemeler'de ve
+        # tepsi menüsünde gösterilir
         self.update_version = ""
-        self.update_pill = QPushButton()
-        self.update_pill.setObjectName("update_pill")
-        self.update_pill.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.update_pill.setIconSize(QSize(14, 14))
-        self.update_pill.clicked.connect(self.show_pending_update)
-        self.update_pill.setVisible(False)
-        layout.addWidget(self.update_pill)
 
         # Window controls
         controls_layout = QHBoxLayout()
@@ -3281,7 +3299,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'about_action'):
             self.about_action.setText(t("about", lang))
         self.setWindowTitle(f"{t('app_title', lang)} - {t('window_subtitle', lang)}")
-        self._apply_update_pill()
         if hasattr(self, 'minimize_btn'):
             self.minimize_btn.setToolTip(t("minimize", lang))
         if hasattr(self, 'maximize_btn'):
@@ -3940,20 +3957,10 @@ class MainWindow(QMainWindow):
         return f"<a href='https://macik.com.tr' style='color:{color}'>macik.com.tr</a>"
 
     def set_update_available(self, version: str = ""):
-        """Başlık çubuğundaki "Güncelle · vX" düğmesini göster/gizle (version boşsa gizler)."""
+        """Bekleyen güncellemenin sürümü (boş: yok). Açık Ayarlar penceresi varsa "Güncelle · vX" düğmesi hemen güncellenir."""
         self.update_version = version or ""
-        self._apply_update_pill()
-
-    def _apply_update_pill(self):
-        if not hasattr(self, "update_pill"):
-            return
-        version = self.update_version
-        self.update_pill.setVisible(bool(version))
-        if version:
-            self.update_pill.setText(t("update_pill", self.lang).format(version=version))
-            self.update_pill.setToolTip(t("update_pill_tip", self.lang).format(version=version))
-            self.update_pill.setIcon(toolbar_icon("update", "#ffffff"))
-        QTimer.singleShot(0, self._fit_min_width)  # düğme görününce/gizlenince başlık çubuğunun gereken genişliği değişir
+        for dialog in self.findChildren(SettingsDialog):
+            dialog.show_pending_update(self.update_version)
 
     def _fit_min_width(self):
         """Pencere, başlık menüsü + güncelleme düğmesi sığacak genişliğin altına inemesin (İngilizce metinler daha uzun)."""

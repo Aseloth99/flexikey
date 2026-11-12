@@ -1,5 +1,0 @@
-* text=auto eol=lf
-*.bat text eol=crlf
-*.ico binary
-*.png binary
-*.webp binary

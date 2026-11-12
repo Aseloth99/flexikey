@@ -1153,23 +1153,6 @@ def _build_qss(p: dict) -> str:
             border-right: none;
         }}
 
-        QPushButton#update_pill {{
-            background-color: {p['accent2']};
-            color: #ffffff;
-            border: 1px solid {p['accent2']};
-            border-top-color: {p['accent_hi']};
-            border-left-color: {p['accent_hi']};
-            border-radius: 14px;
-            padding: 0px 14px;
-            margin: 0px 8px 0px 0px;
-            min-height: 28px;
-            max-height: 28px;
-            font-size: 8.5pt;
-            font-weight: 700;
-        }}
-        QPushButton#update_pill:hover {{
-            background-color: {p['accent']};
-        }}
         /* ── Araç çubuğu: segment grubu, özet hapı, simge düğmesi ── */
         QFrame#btn_group {{
             background-color: {p['surface2']};
