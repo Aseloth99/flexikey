@@ -1246,6 +1246,11 @@ def _build_qss(p: dict) -> str:
         QFrame#row_accent[selected="true"] {{
             background-color: {p['accent']};
         }}
+        QFrame#card_drop_slot {{
+            background-color: {p['accent_soft']};
+            border: 2px dashed {p['accent']};
+            border-radius: 12px;
+        }}
         QFrame#row_sep {{
             background-color: {p['border']};
             border: none;

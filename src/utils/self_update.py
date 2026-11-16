@@ -3,7 +3,7 @@
 Windows'ta çalışan bir exe SİLİNEMEZ ama YENİDEN ADLANDIRILABİLİR. Bu yüzden: yeni exe `<exe>.new` olarak yazılıp
 doğrulanır, çalışan exe `<exe>.old` olur, `.new` onun yerine geçer ve yeni süreç `--wait-pid <bizim pid>` ile başlatılır
 (yeni süreç, biz çıkana kadar bekler: tek kopya kilidi ve tepsi simgesi çakışmasın). Eski sürüm, yeni sürüm yeterince
-çalışana dek `.old` olarak saklanır; yeni sürüm açılışta iki kez ölürse eskisi geri gelir ve bozuk sürüm bir daha önerilmez.
+çalışana dek saklanır (açılışta exe'nin klasöründen `keep_dir()`'e taşınır); yeni sürüm açılışta iki kez ölürse eskisi geri gelir ve bozuk sürüm bir daha önerilmez.
 
 Paket ya doğrudan bir exe ya da içinde exe bulunan bir zip'tir (içeriğe bakılır, uzantıya değil). Zip'ten yalnızca o
 exe okunur; başka hiçbir dosya yazılmaz.
@@ -12,6 +12,7 @@ exe okunur; başka hiçbir dosya yazılmaz.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -286,13 +287,62 @@ class Guard:
     ROLLED_BACK = "rolled_back"
 
 
-def startup_guard(exe: str, version: str) -> str:
+def keep_dir() -> Optional[str]:
+    """Eski sürümün ve açılış sayacının deneme süresince beklediği yer: exe'nin YANI değil (taşınabilir uygulama
+    İndirilenler'de ya da masaüstünde durur, orada bir `FlexiKey.exe.old` yalnızca kalabalık). Yoksa None: exe'nin yanı."""
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        return None
+    path = os.path.join(base, "FlexiKey", "update")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return None
+    return path
+
+
+def _probation_files(exe: str, keep: Optional[str]) -> tuple[str, str]:
+    """Eski sürüm ve açılış sayacı: `keep` varsa orada, yoksa exe'nin yanında."""
+    if keep:
+        return os.path.join(keep, "previous.exe"), os.path.join(keep, "boot")
+    return with_suffix(exe, ".old"), with_suffix(exe, ".boot")
+
+
+def _relocate(src: str, dst: str) -> None:
+    """`src`'yi `dst`'ye taşır; başka sürücüdeyse kopyalar (asıl dosya hâlâ tutuluyorsa temizlikte gider)."""
+    _remove(dst)
+    try:
+        os.replace(src, dst)
+        return
+    except OSError:
+        pass
+    shutil.copyfile(src, dst)
+    _remove(src)
+
+
+def _move_out(exe: str, keep: str) -> None:
+    """`swap_exe`'nin (eski bir sürümünkünün de) ve bir geri almanın exe'nin yanında bıraktıkları açılışta `keep`'e
+    taşınır. Geri almanın `.skip`'i de: o, geri gelen (daha eski) sürüm yalnızca orada aradığı için exe'nin yanına yazılır."""
+    previous, boot = _probation_files(exe, keep)
+    for suffix, dst in ((".old", previous), (".boot", boot), (".skip", os.path.join(keep, "skip"))):
+        src = with_suffix(exe, suffix)
+        if os.path.exists(src):
+            try:
+                _relocate(src, dst)
+            except OSError:
+                pass
+
+
+def startup_guard(exe: str, version: str, keep: Optional[str] = None) -> str:
     """Güncellemeden sonraki ilk açılışlar denemedir. Yeni sürüm iki kez açılışta ölürse eskisi geri gelir (ROLLED_BACK:
     çağıran eski exe'yi başlatıp çıkar) ve bu sürüm `.skip` ile işaretlenir."""
-    old = with_suffix(exe, ".old")
-    if not os.path.exists(old):
+    if keep:
+        _move_out(exe, keep)
+    kept, boot = _probation_files(exe, keep)
+    # exe'nin klasöründen çıkamayan kopya da önceki sürümdür.
+    old = next((p for p in (kept, with_suffix(exe, ".old")) if os.path.exists(p)), None)
+    if old is None:
         return Guard.NORMAL
-    boot = with_suffix(exe, ".boot")
     try:
         with open(boot, "r", encoding="utf-8") as handle:
             starts = int(handle.read().strip() or 0) + 1
@@ -308,32 +358,40 @@ def startup_guard(exe: str, version: str) -> str:
     except OSError:
         return Guard.PROBATION
     try:
-        os.replace(old, exe)
+        _relocate(old, exe)
     except OSError:
         try:
             os.replace(bad, exe)
         except OSError:
             pass
         return Guard.PROBATION
+    # `.bad` ve `.skip` exe'nin yanında: geri gelen sürüm onları yalnızca orada bilen daha eski bir sürüm olabilir.
     _write(with_suffix(exe, ".skip"), version)
     _remove(boot)
     return Guard.ROLLED_BACK
 
 
-def skipped_version(exe: str) -> Optional[str]:
+def skipped_version(exe: str, keep: Optional[str] = None) -> Optional[str]:
     """Bu bilgisayarda geri alınmak zorunda kalan sürüm (bir daha önerilmez)."""
-    try:
-        with open(with_suffix(exe, ".skip"), "r", encoding="utf-8") as handle:
-            value = handle.read().strip()
-    except OSError:
-        return None
-    return value or None
+    paths = ([os.path.join(keep, "skip")] if keep else []) + [with_suffix(exe, ".skip")]
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return handle.read().strip() or None
+        except OSError:
+            continue
+    return None
 
 
-def confirm_healthy(exe: str) -> None:
-    """Çalışan sürüm kendini kanıtladı: güncellemenin bıraktığı `.old` ve yan dosyalar silinir."""
-    for suffix in _SIDE_SUFFIXES:
-        _remove(with_suffix(exe, suffix))
+def confirm_healthy(exe: str, keep: Optional[str] = None) -> bool:
+    """Çalışan sürüm kendini kanıtladı: güncellemenin bıraktığı `.old` ve yan dosyalar silinir. Bir şeyi hâlâ
+    silinemiyorsa (başka bir program, ör. antivirüs tutuyor) False: çağıran sonra yeniden dener."""
+    paths = [with_suffix(exe, suffix) for suffix in _SIDE_SUFFIXES]
+    if keep:
+        paths.extend(_probation_files(exe, keep))
+    for path in paths:
+        _remove(path)
+    return not any(os.path.exists(p) for p in paths)
 
 
 # ------------------------------------------------------------------ yardımcılar

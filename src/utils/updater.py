@@ -131,7 +131,7 @@ class UpdateChecker(QObject):
     check_failed = pyqtSignal()  # yalnızca manuel kontrol başarısız olursa
     notice_received = pyqtSignal(object)  # remote_notice.Notice (duyuru satırı)
 
-    CURRENT_VERSION = "1.0.2"
+    CURRENT_VERSION = "1.0.3"
     UPDATE_CHECK_URL = "https://macik.com.tr/api/updates/check"
     APP_NAME = "FlexiKey"
     CHECK_INTERVAL_HOURS = 24
@@ -227,7 +227,7 @@ class UpdateChecker(QObject):
         """Bu bilgisayarda geri alınmak zorunda kalan sürüm (bozuk çıktığı için bir daha önerilmez); yalnızca derlenmiş exe'de."""
         if not getattr(sys, 'frozen', False):
             return None
-        return self_update.skipped_version(os.path.abspath(sys.executable))
+        return self_update.skipped_version(os.path.abspath(sys.executable), self_update.keep_dir())
 
     def _finish_up_to_date(self, lang: str, show_message: bool):
         from src.utils.locales import t

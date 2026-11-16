@@ -514,8 +514,13 @@ class CheckerSkippedVersionTests(CheckerTestCase):
             with open(exe + ".skip", "w", encoding="utf-8") as handle:
                 handle.write("9.9.9")
             self.assertIsNone(self.checker._skipped_version(), "kaynaktan calisirken yok")
-            with mock.patch.object(updater.sys, "frozen", True, create=True), mock.patch.object(updater.sys, "executable", exe):
-                self.assertEqual(self.checker._skipped_version(), "9.9.9")
+            keep = os.path.join(tmp, "keep")
+            with mock.patch.object(updater.sys, "frozen", True, create=True), mock.patch.object(updater.sys, "executable", exe), \
+                    mock.patch.object(updater.self_update, "keep_dir", return_value=keep):
+                self.assertEqual(self.checker._skipped_version(), "9.9.9", "yeni sürümün taşıyamadığı işaret")
+                os.makedirs(keep)
+                os.replace(exe + ".skip", os.path.join(keep, "skip"))
+                self.assertEqual(self.checker._skipped_version(), "9.9.9", "taşınmış işaret")
 
     def test_update_found_is_not_stamped_but_up_to_date_is(self):
         self.checker._on_worker_result(self.result())

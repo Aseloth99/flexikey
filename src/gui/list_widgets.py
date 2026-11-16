@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen, QPixmap
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPalette, QPen, QPixmap, QTransform
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
+    QGraphicsDropShadowEffect,
     QPushButton,
     QGridLayout,
     QHBoxLayout,
@@ -22,6 +24,8 @@ CARD_MIN_WIDTH = 300  # en dar kart: iki sütun bununla sığıyorsa liste tek s
 CARD_COMFORT_WIDTH = 340  # sütun sayısı buna göre belirlenir: üçüncü sütun ancak kartlar rahat sığarsa
 CARD_MIN_TEXT = 110  # kısayol çipi uzasa bile metin sütununa kalması gereken en az genişlik
 GRID_GAP = 8
+DRAG_TILT = 2.5  # sürüklenen kart Trello'daki gibi hafif eğik durur (derece)
+DRAG_SCROLL_EDGE = 40  # imleç listenin üst/alt kenarına bu kadar yaklaşınca liste kendiliğinden kayar
 
 
 def _elide_metrics(label: QLabel, text: str) -> str:
@@ -310,10 +314,14 @@ class EmptyListPlaceholder(QFrame):
 
 
 class CardListWidget(QScrollArea):
-    """Pencere genişliğine göre kartları yan yana dizer (max genişlik sınırlı)."""
+    """Pencere genişliğine göre kartları yan yana dizer (max genişlik sınırlı).
+
+    Kartlar sürüklenerek sıralanır (Trello gibi): tutulan kart imleçle birlikte süzülür, bırakılacağı yerde boş bir
+    yuva açılır ve öteki kartlar canlı kayar. Bırakınca `reordered(eski, yeni)`; Esc sürüklemeyi geri alır."""
 
     activated = pyqtSignal(int)
     selection_changed = pyqtSignal(int)
+    reordered = pyqtSignal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -345,6 +353,12 @@ class CardListWidget(QScrollArea):
         self._selected_index = -1
         self._columns = 1
         self._empty_widget: QWidget | None = None
+
+        self._press: tuple[_BaseCard, QPoint] | None = None  # sol tuşla basılan kart ve basılan yer (global)
+        self._drag: dict | None = None
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(30)
+        self._scroll_timer.timeout.connect(self._drag_auto_scroll)
 
     def _inner_width(self) -> int:
         width = self.viewport().width() if self.viewport() else self.width()
@@ -404,6 +418,8 @@ class CardListWidget(QScrollArea):
         return len(self._cards)
 
     def clear_cards(self):
+        self._drag_finish(cancel=True, notify=False)  # liste yenilenirken sürükleme yarıda kalmasın
+        self._press = None
         self._cards.clear()
         self._selected_index = -1
         self._empty_widget = None
@@ -413,6 +429,8 @@ class CardListWidget(QScrollArea):
             item = self._grid.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # önce gizle: ızgara bekleyen bir "göster" sıraya koymuş olabilir, ebeveynsiz kart ayrı pencere açılırdı
+                widget.hide()
                 widget.setParent(None)
 
     def _select_index(self, index: int):
@@ -435,13 +453,17 @@ class CardListWidget(QScrollArea):
         for i in reversed(range(self._grid.count())):
             item = self._grid.takeAt(i)
             widget = item.widget()
-            if widget is not None and widget not in self._cards:
+            if widget is not None and widget not in self._cards and not (self._drag and widget is self._drag["slot"]):
+                widget.hide()
                 widget.setParent(None)
         cols = max(1, self._columns)
         for c in range(8):
             self._grid.setColumnStretch(c, 0)
             self._grid.setColumnMinimumWidth(c, 0)
         self._apply_card_sizes()
+        if self._drag:
+            self._drag_layout()
+            return
         for i, card in enumerate(self._cards):
             row, col = divmod(i, cols)
             self._grid.addWidget(card, row, col)
@@ -449,8 +471,10 @@ class CardListWidget(QScrollArea):
     def add_card(self, card: _BaseCard) -> int:
         index = len(self._cards)
         card.item_index = index
-        card.clicked.connect(lambda idx=index: self._on_card_clicked(idx))
-        card.double_clicked.connect(lambda idx=index: self._on_card_double_clicked(idx))
+        # sıra sürükleyerek değişebilir: kartın yeri tıklandığı an bulunur
+        card.clicked.connect(lambda c=card: self._on_card_clicked(self._cards.index(c)))
+        card.double_clicked.connect(lambda c=card: self._on_card_double_clicked(self._cards.index(c)))
+        card.installEventFilter(self)
         self._cards.append(card)
         self._columns = self._column_count()
         self._apply_card_sizes()
@@ -477,3 +501,169 @@ class CardListWidget(QScrollArea):
         self._empty_widget = EmptyListPlaceholder(message, action_text=action_text, action=action, kind=kind)
         self._grid.addWidget(self._empty_widget, 0, 0, 1, 8)
         self._grid.setColumnStretch(0, 1)
+
+    # ------------------------------------------------------------------ sürükleyerek sıralama
+    def eventFilter(self, watched, event):
+        et = event.type()
+        drag = getattr(self, "_drag", None)  # QScrollArea, __init__ bitmeden de buraya uğrar
+        if drag and watched is drag["float"]:
+            # sürükleme süresince fare ve klavye süzülen kartta (grab): bırakma ve Esc buraya gelir
+            if et == QEvent.Type.MouseMove:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    self._drag_move(event.globalPosition().toPoint())
+                else:
+                    self._drag_finish()  # bırakma kaçırıldıysa (ör. pencere değişti) kart takılı kalmasın
+                return True
+            if et == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                self._drag_finish()
+                return True
+            if et == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                self._drag_finish(cancel=True)
+                return True
+            if et in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick, QEvent.Type.KeyPress):
+                return True
+        elif isinstance(watched, _BaseCard) and watched in getattr(self, "_cards", ()):
+            if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._press = (watched, event.globalPosition().toPoint())
+            elif et == QEvent.Type.MouseButtonRelease:
+                self._press = None
+            elif et == QEvent.Type.MouseMove and self._press and event.buttons() & Qt.MouseButton.LeftButton:
+                pos = event.globalPosition().toPoint()
+                card, start = self._press
+                if (pos - start).manhattanLength() >= QApplication.startDragDistance() and len(self._cards) > 1:
+                    self._press = None
+                    self._drag_begin(card, start, pos)
+                    return True
+        return super().eventFilter(watched, event)
+
+    def is_dragging(self) -> bool:
+        return self._drag is not None
+
+    def _drag_begin(self, card: _BaseCard, start: QPoint, pos: QPoint):
+        index = self._cards.index(card)
+        slot = QFrame()
+        slot.setObjectName("card_drop_slot")
+        slot.setFixedSize(card.size())
+
+        # Süzülen kopya: kartın görüntüsü, hafif eğik ve gölgeli; tutulan nokta imlecin altında kalır.
+        shot = card.grab()
+        ratio = shot.devicePixelRatio() or 1.0
+        tilted = shot.transformed(QTransform().rotate(DRAG_TILT), Qt.TransformationMode.SmoothTransformation)
+        tilted.setDevicePixelRatio(ratio)
+        size = tilted.deviceIndependentSize().toSize()
+        floating = QLabel(self.window())  # listenin kenarında kesilmesin: pencerenin her yerinde üstte süzülür
+        floating.setObjectName("card_drag_float")
+        floating.setMouseTracking(True)  # düğmesiz hareket de gelsin: bırakma kaçırıldıysa anlaşılır
+        floating.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        floating.setStyleSheet("background: transparent; border: none;")
+        floating.setPixmap(tilted)
+        floating.resize(size)
+        shadow = QGraphicsDropShadowEffect(floating)
+        shadow.setBlurRadius(26)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QColor(0, 0, 0, 90))
+        floating.setGraphicsEffect(shadow)
+        grab_point = card.mapFromGlobal(start)
+        pad = QPoint((size.width() - card.width()) // 2, (size.height() - card.height()) // 2)
+
+        self._drag = {
+            "card": card, "from": index, "to": index, "slot": slot, "float": floating,
+            "grab": grab_point + pad, "center": QPoint(card.width() // 2, card.height() // 2) - grab_point,
+        }
+        card.hide()
+        self._drag_layout()
+        floating.show()
+        floating.raise_()
+        floating.installEventFilter(self)
+        floating.grabMouse(QCursor(Qt.CursorShape.ClosedHandCursor))
+        floating.grabKeyboard()
+        self._scroll_timer.start()
+        self._drag_move(pos)
+
+    def _drag_layout(self):
+        """Sürükleme sırasında ızgara: sürüklenen kartın yerinde boş yuva, öteki kartlar sırayla."""
+        drag = self._drag
+        items: list[QWidget] = [c for c in self._cards if c is not drag["card"]]
+        items.insert(drag["to"], drag["slot"])
+        while self._grid.count():
+            self._grid.takeAt(0)
+        cols = max(1, self._columns)
+        drag["slot"].setFixedSize(drag["card"].width(), drag["card"].height())
+        for i, widget in enumerate(items):
+            row, col = divmod(i, cols)
+            self._grid.addWidget(widget, row, col)
+        drag["slot"].show()
+        self._grid.activate()
+
+    def _drop_index(self, center: QPoint) -> int:
+        """Süzülen kartın ortasına en yakın yuva (yuvalar sıra numarasıyla sabit hücrelerdir)."""
+        cols = max(1, self._columns)
+        best, best_dist = self._drag["to"], None
+        for i in range(len(self._cards)):
+            rect = self._grid.cellRect(*divmod(i, cols))
+            if not rect.isValid():
+                continue
+            dist = (rect.center() - center).manhattanLength()
+            if best_dist is None or dist < best_dist:
+                best, best_dist = i, dist
+        return best
+
+    def _drag_move(self, pos: QPoint):
+        drag = self._drag
+        if drag is None:
+            return
+        floating = drag["float"]
+        floating.move(floating.parentWidget().mapFromGlobal(pos) - drag["grab"])
+        target = self._drop_index(self._container.mapFromGlobal(pos) + drag["center"])
+        if target != drag["to"]:
+            drag["to"] = target
+            self._drag_layout()
+
+    def _drag_auto_scroll(self):
+        if self._drag is None:
+            self._scroll_timer.stop()
+            return
+        pos = QCursor.pos()
+        y = self.viewport().mapFromGlobal(pos).y()
+        height = self.viewport().height()
+        if y < DRAG_SCROLL_EDGE:
+            step = -max(2, (DRAG_SCROLL_EDGE - y) // 3)
+        elif y > height - DRAG_SCROLL_EDGE:
+            step = max(2, (y - height + DRAG_SCROLL_EDGE) // 3)
+        else:
+            return
+        bar = self.verticalScrollBar()
+        before = bar.value()
+        bar.setValue(before + step)
+        if bar.value() != before:
+            self._drag_move(pos)
+
+    def _drag_finish(self, cancel: bool = False, notify: bool = True):
+        drag, self._drag = self._drag, None
+        if drag is None:
+            return
+        self._scroll_timer.stop()
+        floating = drag["float"]
+        floating.removeEventFilter(self)
+        floating.releaseMouse()
+        floating.releaseKeyboard()
+        floating.hide()
+        floating.deleteLater()
+        slot = drag["slot"]
+        self._grid.removeWidget(slot)
+        slot.hide()
+        slot.setParent(None)
+        slot.deleteLater()
+        card = drag["card"]
+        if not notify:
+            return  # liste zaten yeniden kuruluyor
+        card.show()
+        src, dst = drag["from"], (drag["from"] if cancel else drag["to"])
+        if dst != src:
+            self._cards.insert(dst, self._cards.pop(src))
+            for i, c in enumerate(self._cards):
+                c.item_index = i
+        self._relayout()
+        self._select_index(dst)
+        if dst != src:
+            self.reordered.emit(src, dst)

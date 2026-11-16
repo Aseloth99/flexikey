@@ -634,6 +634,16 @@ class SettingsManager:
                     settings['hotkeys'][i] = new_hotkey
                     break
 
+    def move_hotkey(self, old_index: int, new_index: int):
+        """Kısayolun listedeki yerini değiştir (sürükleyerek sıralama)"""
+        self._move('hotkeys', old_index, new_index)
+
+    def _move(self, key: str, old_index: int, new_index: int):
+        with self.transaction() as settings:
+            items = settings[key]
+            if old_index != new_index and 0 <= old_index < len(items) and 0 <= new_index < len(items):
+                items.insert(new_index, items.pop(old_index))
+
     # ------------------------------------------------------------------ genişletmeler
     def add_expansion(self, trigger: str, replacement: str, enabled: bool = True, is_rich: bool = False,
                       is_secret: bool = False):
@@ -661,6 +671,10 @@ class SettingsManager:
                 if e['trigger'] == old_trigger:
                     settings['expansions'][i] = new_expansion
                     break
+
+    def move_expansion(self, old_index: int, new_index: int):
+        """Metin genişletmenin listedeki yerini değiştir (sürükleyerek sıralama)"""
+        self._move('expansions', old_index, new_index)
 
     # ------------------------------------------------------------------ basit ayarlar
     def set_theme(self, theme: str):
