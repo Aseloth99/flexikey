@@ -362,6 +362,48 @@ class SelfUpdateTests(unittest.TestCase):
         self.assertEqual(su.skipped_version(self.exe), "9.9.9", "atlanan sürüm unutulmaz")
         self.assertEqual(su.startup_guard(self.exe, "1.0.1"), su.Guard.NORMAL)
 
+    def test_the_previous_version_waits_outside_the_exes_folder(self):
+        """Eski sürüm exe'nin yanında `.old` olarak kalmaz: ilk açılışta keep klasörüne taşınır, oradan geri gelir."""
+        keep = os.path.join(self.dir, "keep")
+        os.makedirs(keep)
+        files = lambda: sorted(n for n in os.listdir(self.dir) if os.path.isfile(os.path.join(self.dir, n)))
+        with open(self.exe + ".old", "wb") as f:
+            f.write(b"MZ-previous")
+        self.assertEqual(su.startup_guard(self.exe, "2.0.0", keep), su.Guard.PROBATION)
+        self.assertEqual(files(), ["App.exe"], "exe'nin yanında yalnızca exe")
+        self.assertEqual(self.read(os.path.join(keep, "previous.exe")), b"MZ-previous")
+        self.assertEqual(su.startup_guard(self.exe, "2.0.0", keep), su.Guard.PROBATION)
+        self.assertEqual(files(), ["App.exe"])
+        self.assertEqual(su.startup_guard(self.exe, "2.0.0", keep), su.Guard.ROLLED_BACK)
+        self.assertEqual(self.read(self.exe), b"MZ-previous")
+        self.assertEqual(su.skipped_version(self.exe), "2.0.0", "eski sürüm işareti exe'nin yanında bulur")
+        self.assertFalse(os.path.exists(os.path.join(keep, "previous.exe")) or os.path.exists(os.path.join(keep, "boot")))
+        # Sonraki (düzeltilmiş) sürüm bunları da toplar; atlanan sürüm oradan da okunur.
+        self.assertEqual(su.startup_guard(self.exe, "1.0.0", keep), su.Guard.NORMAL)
+        self.assertEqual(su.skipped_version(self.exe, keep), "2.0.0")
+        self.assertTrue(su.confirm_healthy(self.exe, keep))
+        self.assertEqual(files(), ["App.exe"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows")
+    def test_confirm_healthy_reports_a_file_it_could_not_remove_yet(self):
+        import ctypes
+        keep = os.path.join(self.dir, "keep")
+        os.makedirs(keep)
+        previous = os.path.join(keep, "previous.exe")
+        with open(previous, "wb") as f:
+            f.write(b"MZ-previous")
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        # Silme paylaşımı olmadan tutuluyor (antivirüs taraması gibi).
+        handle = kernel32.CreateFileW(previous, 0x80000000, 1, None, 3, 0, None)   # GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
+        self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+        try:
+            self.assertFalse(su.confirm_healthy(self.exe, keep))
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+        self.assertTrue(su.confirm_healthy(self.exe, keep), "bırakılınca silinir")
+        self.assertFalse(os.path.exists(previous))
+
 
 class ExitWatchdogTest(unittest.TestCase):
     def test_a_daemon_timer_hard_exits_the_process_if_the_quit_hangs(self):

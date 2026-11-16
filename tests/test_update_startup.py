@@ -96,6 +96,7 @@ class StartupGuardTests(unittest.TestCase):
         with mock.patch.object(app_module, "_is_frozen", return_value=frozen), \
              mock.patch.object(app_module, "_own_exe", return_value=r"C:\Uygulama\FlexiKey.exe"), \
              mock.patch.object(self_update, "startup_guard", return_value=result) as guard, \
+             mock.patch.object(self_update, "keep_dir", return_value=r"C:\Veri\update"), \
              mock.patch.object(self_update, "spawn") as spawn:
             try:
                 self.app._self_update_startup()
@@ -107,7 +108,7 @@ class StartupGuardTests(unittest.TestCase):
     def test_rolled_back_version_relaunches_the_previous_one_and_exits(self):
         guard, spawn, exited = self.run_guard(self_update.Guard.ROLLED_BACK)
         from src.utils.updater import UpdateChecker
-        guard.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", UpdateChecker.CURRENT_VERSION)
+        guard.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", UpdateChecker.CURRENT_VERSION, r"C:\Veri\update")
         spawn.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", ["--minimized"])
         self.app._instance_lock.unlock.assert_called_once()   # geri gelen sürüm kilidi alabilsin
         self.assertTrue(exited)
@@ -146,18 +147,39 @@ class HealthyTests(unittest.TestCase):
         patcher, _ = capture_logs()
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.confirm = mock.patch.object(self_update, "confirm_healthy")
+        self.confirm = mock.patch.object(self_update, "confirm_healthy", return_value=True)
         self.confirm_mock = self.confirm.start()
         self.addCleanup(self.confirm.stop)
         for p in (mock.patch.object(app_module, "_is_frozen", return_value=True),
-                  mock.patch.object(app_module, "_own_exe", return_value=r"C:\Uygulama\FlexiKey.exe")):
+                  mock.patch.object(app_module, "_own_exe", return_value=r"C:\Uygulama\FlexiKey.exe"),
+                  mock.patch.object(self_update, "keep_dir", return_value=r"C:\Veri\update")):
             p.start()
             self.addCleanup(p.stop)
+        self.timer = TimerCapture(self)
         self.app = make_app()
 
     def test_timer_confirms_a_healthy_version(self):
         self.app._confirm_healthy()
-        self.confirm_mock.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe")
+        self.confirm_mock.assert_called_once_with(r"C:\Uygulama\FlexiKey.exe", r"C:\Veri\update")
+        self.assertEqual(self.timer.delays(), [], "her şey silindi: yeniden deneme yok")
+
+    def test_a_file_still_held_is_tried_again_every_minute_for_a_while(self):
+        """Antivirüsün tuttuğu eski exe tek denemede kalırsa günlerce exe'nin yanında durur: dakikada bir yeniden denenir."""
+        self.confirm_mock.return_value = False
+        self.app._confirm_healthy()
+        rounds = 1
+        while self.timer.delays():
+            self.assertEqual(self.timer.delays(), [60_000])
+            self.timer.fire()
+            rounds += 1
+        self.assertEqual(rounds, 30, "sınırlı sayıda")
+        self.assertEqual(self.confirm_mock.call_count, 30)
+        self.confirm_mock.reset_mock(return_value=True)
+        self.confirm_mock.side_effect = [False, True]
+        self.app._confirm_healthy()
+        self.timer.fire()
+        self.assertEqual(self.confirm_mock.call_count, 2)
+        self.assertEqual(self.timer.delays(), [], "silinince durur")
 
     def test_clean_exit_after_ten_seconds_confirms(self):
         self.app._started_at = time.monotonic() - 11

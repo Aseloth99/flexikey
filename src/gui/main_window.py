@@ -3224,6 +3224,7 @@ class MainWindow(QMainWindow):
         self.hotkeys_list.activated.connect(lambda row: self.edit_hotkey(row))
         self._selected_hotkey_row = -1
         self.hotkeys_list.selection_changed.connect(self._on_hotkey_selection_changed)
+        self.hotkeys_list.reordered.connect(self._on_hotkeys_reordered)
         layout.addWidget(self.hotkeys_list, 1)
         
         return widget
@@ -3242,6 +3243,7 @@ class MainWindow(QMainWindow):
         self.expansions_list.activated.connect(lambda row: self.edit_expansion(row))
         self._selected_expansion_row = -1
         self.expansions_list.selection_changed.connect(self._on_expansion_selection_changed)
+        self.expansions_list.reordered.connect(self._on_expansions_reordered)
         layout.addWidget(self.expansions_list, 1)
         
         return widget
@@ -3587,6 +3589,15 @@ class MainWindow(QMainWindow):
         self._selected_expansion_row = select_row
         self._enable_mouse_tracking(self.expansions_list)
     
+    def _on_hotkeys_reordered(self, old_row: int, new_row: int):
+        """Kart sürüklenip bırakıldı: sıra kaydedilir (kısayolların çalışması sıradan bağımsız)."""
+        self.settings_manager.move_hotkey(old_row, new_row)
+        self.load_hotkeys(keep_row=new_row)
+
+    def _on_expansions_reordered(self, old_row: int, new_row: int):
+        self.settings_manager.move_expansion(old_row, new_row)
+        self.load_expansions(keep_row=new_row)
+
     def add_hotkey(self):
         dialog = HotkeyDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:

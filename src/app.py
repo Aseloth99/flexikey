@@ -198,7 +198,7 @@ class FlexiKeyApp:
         if not _is_frozen():
             return
         exe = _own_exe()
-        guard = self_update.startup_guard(exe, UpdateChecker.CURRENT_VERSION)
+        guard = self_update.startup_guard(exe, UpdateChecker.CURRENT_VERSION, self_update.keep_dir())
         if guard == self_update.Guard.ROLLED_BACK:
             log_info("Yeni sürüm açılışta çalışmadı: önceki sürüm geri getirildi ve yeniden başlatılıyor")
             try:
@@ -213,10 +213,12 @@ class FlexiKeyApp:
         QTimer.singleShot(int(self_update.HEALTHY_AFTER_SECONDS * 1000), self._confirm_healthy)
         self.app.aboutToQuit.connect(self._on_about_to_quit)
 
-    def _confirm_healthy(self):
-        """Yeni sürüm yeterince çalıştı: güncellemenin bıraktığı `.old` ve yan dosyalar silinir."""
+    def _confirm_healthy(self, tries_left: int = 30):
+        """Yeni sürüm yeterince çalıştı: güncellemenin bıraktığı `.old` ve yan dosyalar silinir. O an başka bir
+        programın tuttuğu dosya (ör. antivirüs taraması) bir süre dakikada bir yeniden denenir."""
         if _is_frozen() and not self._updating:
-            self_update.confirm_healthy(_own_exe())
+            if not self_update.confirm_healthy(_own_exe(), self_update.keep_dir()) and tries_left > 1:
+                QTimer.singleShot(60_000, lambda: self._confirm_healthy(tries_left - 1))
 
     def _on_about_to_quit(self):
         """Temiz çıkış: açılıştan en az 10 sn sonra çıkılıyorsa yeni sürüm sağlıklı sayılır. Kendini güncelleyip çıkan
@@ -226,7 +228,7 @@ class FlexiKeyApp:
         except Exception:
             pass
         if _is_frozen() and not self._updating and time.monotonic() - self._started_at >= 10:
-            self_update.confirm_healthy(_own_exe())
+            self_update.confirm_healthy(_own_exe(), self_update.keep_dir())
 
     def _announce_updated(self):
         """`--updated <eski sürüm>` ile açıldık: tepsi balonuyla "vX sürümüne güncellendi" de."""
