@@ -17,12 +17,15 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from src.gui.command_icons import GlyphLabel
 from src.utils.helpers import format_shortcut_for_display
 
 CARD_MAX_WIDTH = 620
 CARD_MIN_WIDTH = 300  # en dar kart: iki sütun bununla sığıyorsa liste tek sütuna düşmez
 CARD_COMFORT_WIDTH = 340  # sütun sayısı buna göre belirlenir: üçüncü sütun ancak kartlar rahat sığarsa
 CARD_MIN_TEXT = 110  # kısayol çipi uzasa bile metin sütununa kalması gereken en az genişlik
+CARD_GLYPH = 14  # tür / komut simgesi (emoji yerine çizim; rengi yanındaki yazıdan gelir)
+CARD_GLYPH_GAP = 5
 GRID_GAP = 8
 DRAG_TILT = 2.5  # sürüklenen kart Trello'daki gibi hafif eğik durur (derece)
 DRAG_SCROLL_EDGE = 40  # imleç listenin üst/alt kenarına bu kadar yaklaşınca liste kendiliğinden kayar
@@ -126,7 +129,10 @@ class _BaseCard(QFrame):
         self.primary_label.setWordWrap(False)
         self.primary_label.setMinimumWidth(CARD_MIN_TEXT)
         self.primary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        text_col.addWidget(self.primary_label)
+        self.primary_icon = GlyphLabel("", CARD_GLYPH)
+        self.primary_icon.setObjectName("card_primary_icon")
+        self.primary_icon.setVisible(False)
+        text_col.addLayout(self._icon_row(self.primary_icon, self.primary_label))
         _transparent(self.primary_label)
 
         self.secondary_label = QLabel()
@@ -134,7 +140,10 @@ class _BaseCard(QFrame):
         self.secondary_label.setWordWrap(False)
         self.secondary_label.setMinimumWidth(0)
         self.secondary_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        text_col.addWidget(self.secondary_label)
+        self.secondary_icon = GlyphLabel("", CARD_GLYPH)
+        self.secondary_icon.setObjectName("card_secondary_icon")
+        self.secondary_icon.setVisible(False)
+        text_col.addLayout(self._icon_row(self.secondary_icon, self.secondary_label))
         _transparent(self.secondary_label)
 
         root.addLayout(text_col, 1)
@@ -155,6 +164,19 @@ class _BaseCard(QFrame):
         self._has_state = False
         self._pill_allowed = True  # liste karar verir: hap ya bütün kartlarda görünür ya hiçbirinde
 
+    @staticmethod
+    def _icon_row(icon: GlyphLabel, label: QLabel) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(CARD_GLYPH_GAP)
+        row.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(label, 1)
+        return row
+
+    def _set_glyphs(self, primary: str, secondary: str):
+        self.primary_icon.set_glyph(primary)
+        self.secondary_icon.set_glyph(secondary if self._secondary_full else "")
+
     def required_width(self) -> int:
         """Kısayol çipi tam, metin sütunu en az CARD_MIN_TEXT görünsün diye gereken genişlik.
 
@@ -162,7 +184,10 @@ class _BaseCard(QFrame):
         margins = self.layout().contentsMargins()
         kbd_hint = QFontMetrics(self.kbd_label.font()).horizontalAdvance(self._kbd_full or self.kbd_label.text()) + 24
         kbd_w = min(240, max(56, kbd_hint))
-        widths = [4, 8, kbd_w, CARD_MIN_TEXT]  # yan çubuk, durum noktası, kısayol çipi, metin
+        text_w = CARD_MIN_TEXT
+        if self.primary_icon.glyph() or self.secondary_icon.glyph():
+            text_w += CARD_GLYPH + CARD_GLYPH_GAP
+        widths = [4, 8, kbd_w, text_w]  # yan çubuk, durum noktası, kısayol çipi, metin (+ simge)
         if self.badge_label.isVisibleTo(self):
             widths.append(self.badge_label.sizeHint().width())
         spacing = self.layout().spacing() * (len(widths) - 1)
@@ -231,11 +256,13 @@ class _BaseCard(QFrame):
 
 
 class HotkeyCard(_BaseCard):
-    def set_data(self, shortcut: str, chip: str, detail: str, enabled: bool, is_rich: bool = False, state_text: str = ""):
+    def set_data(self, shortcut: str, chip: str, detail: str, enabled: bool, is_rich: bool = False, state_text: str = "",
+                 chip_glyph: str = "", detail_glyph: str = ""):
         self.set_enabled_state(enabled, state_text)
         self._kbd_full = format_shortcut_for_display(shortcut)
         self._primary_full = chip or self._kbd_full
         self._secondary_full = (detail or "").replace("\r", "").replace("\n", " ").strip()
+        self._set_glyphs(chip_glyph, detail_glyph)
         kbd_font = QFont("Segoe UI")
         kbd_font.setPointSize(9)
         kbd_font.setWeight(QFont.Weight.DemiBold)
@@ -249,11 +276,13 @@ class HotkeyCard(_BaseCard):
 
 
 class ExpansionCard(_BaseCard):
-    def set_data(self, trigger: str, chip: str, detail: str, enabled: bool, is_rich: bool = False, state_text: str = ""):
+    def set_data(self, trigger: str, chip: str, detail: str, enabled: bool, is_rich: bool = False, state_text: str = "",
+                 chip_glyph: str = "", detail_glyph: str = ""):
         self.set_enabled_state(enabled, state_text)
         self._kbd_full = trigger or ""
         self._primary_full = chip or trigger or ""
         self._secondary_full = (detail or "").replace("\r", "").replace("\n", " ").strip()
+        self._set_glyphs(chip_glyph, detail_glyph)
         kbd_font = QFont("Segoe UI")
         kbd_font.setPointSize(9)
         kbd_font.setWeight(QFont.Weight.DemiBold)

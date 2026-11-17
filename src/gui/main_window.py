@@ -1,5 +1,5 @@
 """
-Ana Pencere - QKeySequenceEdit ile profesyonel klavye yakalama
+Ana pencere, kısayol ve metin genişletme pencereleri
 """
 
 import os
@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QTabWidget,
     QLineEdit, QComboBox, QLabel, QDialog,
-    QFormLayout, QCheckBox, QTextEdit, QDialogButtonBox,
-    QFrame, QFileDialog, QKeySequenceEdit,
+    QFormLayout, QCheckBox, QTextEdit,
+    QFrame, QFileDialog,
     QMenu, QSizePolicy, QApplication, QScrollArea, QGridLayout, QButtonGroup
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QEvent
@@ -29,7 +29,8 @@ from src.gui.list_widgets import CardListWidget, HotkeyCard, ExpansionCard
 from src.gui.message_box import MessageBox
 
 from src.gui.toolbar_icons import strip_symbols, toolbar_icon
-from src.utils.helpers import format_shortcut_for_display, get_application_path
+from src.gui.command_icons import ACTION_GLYPHS, GROUP_GLYPHS, GlyphLabel, command_glyph, glyph_icon
+from src.utils.helpers import format_shortcut_for_display
 from src.utils.settings_manager import (
     DEFAULT_SETTINGS, exportable_records, is_locked_secret, is_secret_record, register_saved_items, secret_count,
 )
@@ -91,21 +92,7 @@ class EnhancedKeySequenceEdit(QLineEdit):
         
     def get_shortcut(self) -> str:
         return self._shortcut
-        
-    def setKeySequence(self, sequence):
-        """Geriye uyumluluk için QKeySequence veya str kabul eder."""
-        if isinstance(sequence, QKeySequence):
-            self.set_shortcut(sequence.toString())
-        else:
-            self.set_shortcut(str(sequence) if sequence else "")
-            
-    def keySequence(self):
-        """Geriye uyumluluk: QKeySequence nesnesi döndürür."""
-        return QKeySequence(self._shortcut)
-        
-    def toString(self) -> str:
-        return self._shortcut
-        
+
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         modifiers = event.modifiers()
@@ -1549,15 +1536,13 @@ class HotkeyDialog(FramelessResizableDialog):
         self.shortcut_input.setToolTip(t("hint_shortcut_key", self.lang))
         form.addRow(t("hotkey_label", self.lang), self.shortcut_input)
         
+        tm = getattr(self.parent(), "theme_manager", None)
+        p = tm.get_palette() if tm else {}
         self.action_type = QComboBox()
-        self.action_type.addItems([
-            t("action_text", self.lang),
-            t("action_command", self.lang),
-            t("action_open_url", self.lang),
-            t("action_open_file", self.lang),
-            t("action_run_program", self.lang),
-            t("action_shortcut", self.lang),
-        ])
+        self.action_type.setIconSize(QSize(16, 16))
+        for kind in ("text", "command", "open_url", "open_file", "run_program", "shortcut"):
+            self.action_type.addItem(glyph_icon(ACTION_GLYPHS[kind], p.get("text_secondary", "#a3a3a3"), 16),
+                                     t(f"action_{kind}", self.lang))
         self.action_type.setFixedHeight(36)
         self.action_type.setToolTip(t("hint_action_type", self.lang))
         self.action_type.currentIndexChanged.connect(self.on_action_type_changed)
@@ -1614,14 +1599,13 @@ class HotkeyDialog(FramelessResizableDialog):
         cmd_layout.setContentsMargins(0, 0, 0, 0)
         cmd_layout.setSpacing(8)
 
-        tm = getattr(self.parent(), "theme_manager", None)
-        p = tm.get_palette() if tm else {}
         accent = p.get("accent_text", "#00ACC1")
         accent_soft = p.get("accent_soft", "#1d464b")
         surface2 = p.get("surface2", "#262626")
         surface_active = p.get("surface_active", "#303030")
         border = p.get("border", "#2e2e2e")
         text_color = p.get("text", "#f5f5f5")
+        icon_color = p.get("text_secondary", "#a3a3a3")
 
         # Üst Arama ve Seçilen Komut Durum Çubuğu
         matrix_top_row = QHBoxLayout()
@@ -1663,38 +1647,14 @@ class HotkeyDialog(FramelessResizableDialog):
         matrix_container_layout.setContentsMargins(2, 2, 8, 4)
         matrix_container_layout.setSpacing(8)
 
-        self.system_cmd_combo = QComboBox()
-        self.system_cmd_combo.hide()
-
         self._matrix_button_group = QButtonGroup(self)
         self._matrix_button_group.setExclusive(True)
         self._matrix_categories = []
         self._matrix_buttons = {}
         self._selected_system_command = ""
 
-        cmd_icons = {
-            "bilgisayari_kapat": "🛑", "yeniden_basla": "🔄", "uyku_modu": "🌙", "hazirda_beklet": "💤",
-            "kilitle": "🔒", "oturumu_kapat": "🚪", "ekrani_kapat": "📺", "cop_kutusunu_bosalt": "🗑️",
-            "ekran_goruntusu": "📸", "ekran_alintisi": "✂️", "pano_gecmisi": "📋",
-            "emoji_paneli": "😀", "buyutec": "🔍", "ekran_klavyesi": "⌨️",
-            "gorev_yoneticisi": "📊", "calistir": "🚀", "komut_istemi": "💻", "powershell": "⚡",
-            "dosya_gezgini": "📁", "not_defteri": "📝", "hesap_makinesi": "🧮", "paint": "🎨",
-            "ayarlar": "⚙", "denetim_masasi": "🎛️", "aygit_yoneticisi": "📟", "ses_karistirici": "🎚️",
-            "hizmetler": "🔧",
-            "chrome": "🌐", "firefox": "🦊", "edge": "🌊",
-            "ses_ac": "🔊", "ses_kis": "🔉", "sesi_kapat": "🔇", "ses_maksimum": "📢", "ses_minimum": "🔈",
-            "oynat_duraklat": "⏯", "sonraki_sarki": "⏭", "onceki_sarki": "⏮", "durdur": "⏹",
-            "masaustunu_goster": "🖥", "tum_pencereleri_kucult": "🗕", "gorev_gorunumu": "🗔",
-            "yeni_sanal_masaustu": "➕", "sonraki_masaustu": "⏩", "onceki_masaustu": "⏪",
-            "sanal_masaustu_kapat": "❌", "sola_yasla": "⬅", "saga_yasla": "➡",
-            "pencereyi_buyut": "🗖", "pencereyi_kapat": "✖",
-            "geri": "◀", "ileri": "▶", "sayfayi_yenile": "🔄", "yeni_sekme": "➕",
-            "sekmeyi_kapat": "❌", "kapatilan_sekmeyi_ac": "📑",
-            "bu_bilgisayar": "💻", "indirilenler": "📥", "belgelerim": "📄", "resimlerim": "🖼",
-            "muziklerim": "🎵", "videolarim": "🎬", "masaustu": "🗂️", "geri_donusum_kutusu": "🗑️",
-            "kopyala": "📋", "kes": "✂", "yapistir": "📋", "tumunu_sec": "🔘",
-            "geri_al": "↩", "yeniden_yap": "↪", "bul": "🔍", "kaydet": "💾", "yazdir": "🖨",
-        }
+        # kategori başlığı (çevrilmiş metin) -> simge
+        group_glyphs = {t(key, self.lang): glyph for key, glyph in GROUP_GLYPHS.items()}
 
         # Komutlar
         commands = [
@@ -1756,6 +1716,7 @@ class HotkeyDialog(FramelessResizableDialog):
             (t("cmd_snap_right", self.lang), "saga_yasla"),
             (t("cmd_maximize_window", self.lang), "pencereyi_buyut"),
             (t("cmd_close_window", self.lang), "pencereyi_kapat"),
+            (t("cmd_switch_window", self.lang), "pencere_degistir"),
 
             (t("cmd_grp_browsers", self.lang), ""),
             (t("cmd_chrome", self.lang), "chrome"),
@@ -1769,6 +1730,7 @@ class HotkeyDialog(FramelessResizableDialog):
             (t("cmd_new_tab", self.lang), "yeni_sekme"),
             (t("cmd_close_tab", self.lang), "sekmeyi_kapat"),
             (t("cmd_reopen_tab", self.lang), "kapatilan_sekmeyi_ac"),
+            (t("cmd_incognito", self.lang), "gizli_pencere"),
 
             (t("cmd_grp_quick_access", self.lang), ""),
             (t("cmd_this_pc", self.lang), "bu_bilgisayar"),
@@ -1801,16 +1763,19 @@ class HotkeyDialog(FramelessResizableDialog):
 
         for display, value in commands:
             if not value:
-                self.system_cmd_combo.addItem(display, "")
-                idx = self.system_cmd_combo.count() - 1
-                self.system_cmd_combo.model().item(idx).setEnabled(False)
-
                 if cur_header is not None and cur_grid_widget is not None:
                     self._matrix_categories.append((cur_header, cur_grid_widget, cur_items))
 
-                clean_title = display.strip("- ").strip()
-                cur_header = QLabel(clean_title)
-                cur_header.setStyleSheet(f"font-weight: 700; font-size: 8.5pt; color: {accent}; margin-top: 6px; margin-bottom: 2px;")
+                cur_header = QWidget()
+                header_row = QHBoxLayout(cur_header)
+                header_row.setContentsMargins(0, 8, 0, 2)
+                header_row.setSpacing(6)
+                header_icon = GlyphLabel(group_glyphs.get(display, "gear"), 14)
+                header_icon.setStyleSheet(f"color: {accent};")
+                header_row.addWidget(header_icon)
+                header_text = QLabel(display)
+                header_text.setStyleSheet(f"font-weight: 700; font-size: 8.5pt; color: {accent};")
+                header_row.addWidget(header_text, 1)
                 matrix_container_layout.addWidget(cur_header)
 
                 cur_grid_widget = QWidget()
@@ -1825,7 +1790,6 @@ class HotkeyDialog(FramelessResizableDialog):
                 cur_items = []
                 item_in_cat_count = 0
             else:
-                self.system_cmd_combo.addItem(display, value)
                 if first_valid_val is None:
                     first_valid_val = value
 
@@ -1833,8 +1797,9 @@ class HotkeyDialog(FramelessResizableDialog):
                 col = item_in_cat_count % 3
                 item_in_cat_count += 1
 
-                ico = cmd_icons.get(value, "•")
-                btn = QPushButton(f"{ico}  {display}")
+                btn = QPushButton(display)
+                btn.setIcon(glyph_icon(command_glyph(value), icon_color, 16, on_color=accent))
+                btn.setIconSize(QSize(16, 16))
                 btn.setCheckable(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setFixedHeight(34)
@@ -1875,7 +1840,6 @@ class HotkeyDialog(FramelessResizableDialog):
         matrix_container_layout.addStretch()
         matrix_scroll.setWidget(matrix_container)
         cmd_layout.addWidget(matrix_scroll, 1)
-        cmd_layout.addWidget(self.system_cmd_combo)
         cmd_layout.addWidget(make_hint_label(t("hint_system_cmd", self.lang)))
 
         if first_valid_val:
@@ -2034,12 +1998,6 @@ class HotkeyDialog(FramelessResizableDialog):
     def _on_matrix_btn_clicked(self, value: str, display: str):
         self._selected_system_command = value
         self._matrix_status_label.setText(f"✓ {display}")
-        for i in range(self.system_cmd_combo.count()):
-            if self.system_cmd_combo.itemData(i) == value:
-                self.system_cmd_combo.blockSignals(True)
-                self.system_cmd_combo.setCurrentIndex(i)
-                self.system_cmd_combo.blockSignals(False)
-                break
 
     def set_matrix_selected(self, value: str):
         self._selected_system_command = value
@@ -2084,10 +2042,6 @@ class HotkeyDialog(FramelessResizableDialog):
             else:
                 self.text_input.setPlainText(value)
         elif action_type == 'command':
-            for i in range(self.system_cmd_combo.count()):
-                if self.system_cmd_combo.itemData(i) == value:
-                    self.system_cmd_combo.setCurrentIndex(i)
-                    break
             self.set_matrix_selected(value)
         elif action_type == 'open_url':
             self.url_input.setText(value)
@@ -2124,7 +2078,7 @@ class HotkeyDialog(FramelessResizableDialog):
             else:
                 value = self.text_input.toPlainText().strip()
         elif idx == 1:
-            value = self._selected_system_command or self.system_cmd_combo.currentData() or ""
+            value = self._selected_system_command
         elif idx == 2:
             value = self.url_input.text().strip()
         elif idx == 3:
@@ -3412,69 +3366,70 @@ class MainWindow(QMainWindow):
         return text
 
     def _format_command_display(self, cmd_value: str) -> str:
-        cmd_meta = {
+        cmd_keys = {
             # Sistem Gücü
-            "bilgisayari_kapat": ("🛑", "cmd_shutdown"), "yeniden_basla": ("🔄", "cmd_restart"),
-            "uyku_modu": ("🌙", "cmd_sleep"), "hazirda_beklet": ("💤", "cmd_hibernate"),
-            "kilitle": ("🔒", "cmd_lock"), "oturumu_kapat": ("🚪", "cmd_logout"),
-            "ekrani_kapat": ("📺", "cmd_turn_off_screen"), "cop_kutusunu_bosalt": ("🗑️", "cmd_empty_recycle_bin"),
+            "bilgisayari_kapat": "cmd_shutdown", "yeniden_basla": "cmd_restart",
+            "uyku_modu": "cmd_sleep", "hazirda_beklet": "cmd_hibernate",
+            "kilitle": "cmd_lock", "oturumu_kapat": "cmd_logout",
+            "ekrani_kapat": "cmd_turn_off_screen", "cop_kutusunu_bosalt": "cmd_empty_recycle_bin",
 
             # Ekran & Araçlar
-            "ekran_goruntusu": ("📸", "cmd_screenshot"),
-            "ekran_alintisi": ("✂️", "cmd_snipping_tool"), "pano_gecmisi": ("📋", "cmd_clipboard_history"),
-            "emoji_paneli": ("😀", "cmd_emoji_panel"), "buyutec": ("🔍", "cmd_magnifier"),
-            "ekran_klavyesi": ("⌨️", "cmd_on_screen_keyboard"),
+            "ekran_goruntusu": "cmd_screenshot",
+            "ekran_alintisi": "cmd_snipping_tool", "pano_gecmisi": "cmd_clipboard_history",
+            "emoji_paneli": "cmd_emoji_panel", "buyutec": "cmd_magnifier",
+            "ekran_klavyesi": "cmd_on_screen_keyboard",
 
             # Uygulamalar & Sistem Araçları
-            "gorev_yoneticisi": ("📊", "cmd_task_mgr"), "calistir": ("🚀", "cmd_run_dialog"),
-            "komut_istemi": ("💻", "cmd_cmd"), "powershell": ("⚡", "cmd_powershell"),
-            "dosya_gezgini": ("📁", "cmd_explorer"), "not_defteri": ("📝", "cmd_notepad"),
-            "hesap_makinesi": ("🧮", "cmd_calc"), "paint": ("🎨", "cmd_paint"),
-            "ayarlar": ("⚙", "cmd_settings"), "denetim_masasi": ("🎛️", "cmd_control_panel"),
-            "aygit_yoneticisi": ("📟", "cmd_device_manager"), "ses_karistirici": ("🎚️", "cmd_volume_mixer"),
-            "hizmetler": ("🔧", "cmd_services"),
+            "gorev_yoneticisi": "cmd_task_mgr", "calistir": "cmd_run_dialog",
+            "komut_istemi": "cmd_cmd", "powershell": "cmd_powershell",
+            "dosya_gezgini": "cmd_explorer", "not_defteri": "cmd_notepad",
+            "hesap_makinesi": "cmd_calc", "paint": "cmd_paint",
+            "ayarlar": "cmd_settings", "denetim_masasi": "cmd_control_panel",
+            "aygit_yoneticisi": "cmd_device_manager", "ses_karistirici": "cmd_volume_mixer",
+            "hizmetler": "cmd_services",
 
             # Tarayıcılar
-            "chrome": ("🌐", "cmd_chrome"), "firefox": ("🦊", "cmd_firefox"), "edge": ("🌊", "cmd_edge"),
+            "chrome": "cmd_chrome", "firefox": "cmd_firefox", "edge": "cmd_edge",
 
             # Ses
-            "ses_ac": ("🔊", "cmd_volume_up"), "ses_kis": ("🔉", "cmd_volume_down"),
-            "sesi_kapat": ("🔇", "cmd_volume_mute"), "ses_maksimum": ("📢", "cmd_volume_max"),
-            "ses_minimum": ("🔈", "cmd_volume_min"),
+            "ses_ac": "cmd_volume_up", "ses_kis": "cmd_volume_down",
+            "sesi_kapat": "cmd_volume_mute", "ses_maksimum": "cmd_volume_max",
+            "ses_minimum": "cmd_volume_min",
 
             # Medya
-            "oynat_duraklat": ("⏯", "cmd_play_pause"), "sonraki_sarki": ("⏭", "cmd_next_track"),
-            "onceki_sarki": ("⏮", "cmd_prev_track"), "durdur": ("⏹", "cmd_stop"),
+            "oynat_duraklat": "cmd_play_pause", "sonraki_sarki": "cmd_next_track",
+            "onceki_sarki": "cmd_prev_track", "durdur": "cmd_stop",
 
             # Pencere & Masaüstü
-            "masaustunu_goster": ("🖥", "cmd_show_desktop"), "tum_pencereleri_kucult": ("🗕", "cmd_minimize_all"),
-            "gorev_gorunumu": ("🗔", "cmd_task_view"), "yeni_sanal_masaustu": ("➕", "cmd_new_vdesktop"),
-            "sonraki_masaustu": ("⏩", "cmd_next_vdesktop"), "onceki_masaustu": ("⏪", "cmd_prev_vdesktop"),
-            "sanal_masaustu_kapat": ("❌", "cmd_close_vdesktop"), "sola_yasla": ("⬅", "cmd_snap_left"),
-            "saga_yasla": ("➡", "cmd_snap_right"), "pencereyi_buyut": ("🗖", "cmd_maximize_window"),
-            "pencereyi_kapat": ("✖", "cmd_close_window"), "pencere_degistir": ("🔁", "cmd_switch_window"),
+            "masaustunu_goster": "cmd_show_desktop", "tum_pencereleri_kucult": "cmd_minimize_all",
+            "gorev_gorunumu": "cmd_task_view", "yeni_sanal_masaustu": "cmd_new_vdesktop",
+            "sonraki_masaustu": "cmd_next_vdesktop", "onceki_masaustu": "cmd_prev_vdesktop",
+            "sanal_masaustu_kapat": "cmd_close_vdesktop", "sola_yasla": "cmd_snap_left",
+            "saga_yasla": "cmd_snap_right", "pencereyi_buyut": "cmd_maximize_window",
+            "pencereyi_kapat": "cmd_close_window", "pencere_degistir": "cmd_switch_window",
 
             # Tarayıcı Gezintisi
-            "geri": ("◀", "cmd_back"), "ileri": ("▶", "cmd_forward"),
-            "sayfayi_yenile": ("🔄", "cmd_refresh_page"), "yeni_sekme": ("➕", "cmd_new_tab"),
-            "sekmeyi_kapat": ("❌", "cmd_close_tab"), "kapatilan_sekmeyi_ac": ("📑", "cmd_reopen_tab"),
+            "geri": "cmd_back", "ileri": "cmd_forward",
+            "sayfayi_yenile": "cmd_refresh_page", "yeni_sekme": "cmd_new_tab",
+            "sekmeyi_kapat": "cmd_close_tab", "kapatilan_sekmeyi_ac": "cmd_reopen_tab",
+            "gizli_pencere": "cmd_incognito",
 
             # Hızlı Erişim
-            "bu_bilgisayar": ("💻", "cmd_this_pc"), "indirilenler": ("📥", "cmd_downloads"),
-            "belgelerim": ("📄", "cmd_documents"), "resimlerim": ("🖼", "cmd_pictures"),
-            "muziklerim": ("🎵", "cmd_music"), "videolarim": ("🎬", "cmd_videos"),
-            "masaustu": ("🗂️", "cmd_desktop_folder"), "geri_donusum_kutusu": ("🗑️", "cmd_recycle_bin"),
+            "bu_bilgisayar": "cmd_this_pc", "indirilenler": "cmd_downloads",
+            "belgelerim": "cmd_documents", "resimlerim": "cmd_pictures",
+            "muziklerim": "cmd_music", "videolarim": "cmd_videos",
+            "masaustu": "cmd_desktop_folder", "geri_donusum_kutusu": "cmd_recycle_bin",
 
             # Metin & Düzenleme
-            "kopyala": ("📋", "cmd_copy"), "kes": ("✂", "cmd_cut"), "yapistir": ("📋", "cmd_paste"),
-            "tumunu_sec": ("🔘", "cmd_select_all"), "geri_al": ("↩", "cmd_undo"),
-            "yeniden_yap": ("↪", "cmd_redo"), "bul": ("🔍", "cmd_find"),
-            "kaydet": ("💾", "cmd_save"), "yazdir": ("🖨", "cmd_print"),
+            "kopyala": "cmd_copy", "kes": "cmd_cut", "yapistir": "cmd_paste",
+            "tumunu_sec": "cmd_select_all", "geri_al": "cmd_undo",
+            "yeniden_yap": "cmd_redo", "bul": "cmd_find",
+            "kaydet": "cmd_save", "yazdir": "cmd_print",
         }
-        if cmd_value in cmd_meta:
-            icon, key = cmd_meta[cmd_value]
-            return f"{icon} {t(key, self.lang)}"
-        return f"⚙ {cmd_value}" if cmd_value else ""
+        # simge ayrı çizilir (command_icons.command_glyph); burada yalnızca adı
+        if cmd_value in cmd_keys:
+            return t(cmd_keys[cmd_value], self.lang)
+        return cmd_value or ""
 
     def load_hotkeys(self, keep_row: int | None = None):
         settings = self.settings_manager.load_settings()
@@ -3498,17 +3453,20 @@ class MainWindow(QMainWindow):
         for hotkey in hotkeys:
             card = HotkeyCard()
             type_label = self.get_action_type_turkish(hotkey['action_type'])
+            chip_glyph = ACTION_GLYPHS.get(hotkey['action_type'], "gear")
+            detail_glyph = ""
             is_rich = bool(hotkey.get('is_rich', False) and hotkey['action_type'] == 'text')
             is_secret = hotkey['action_type'] == 'text' and is_secret_record(hotkey)
             if is_secret:
-                type_label = f"🔒 {t('chip_secret', self.lang)}"
+                type_label, chip_glyph = t('chip_secret', self.lang), ACTION_GLYPHS["secret"]
             elif is_rich:
-                type_label = f"📝 {t('chip_rich_expansion', self.lang)}"
+                type_label, chip_glyph = t('chip_rich_expansion', self.lang), ACTION_GLYPHS["rich"]
             value = hotkey.get('action_value', '')
             if is_secret:
                 primary = t("secret_mask", self.lang)
             elif hotkey['action_type'] == 'command':
                 primary = self._format_command_display(value)
+                detail_glyph = command_glyph(value)
             elif hotkey['action_type'] == 'open_url':
                 primary = self._site_label(value) or value
             else:
@@ -3520,6 +3478,8 @@ class MainWindow(QMainWindow):
                 hotkey.get('enabled', True),
                 is_rich=is_rich,
                 state_text=t("state_active" if hotkey.get('enabled', True) else "state_passive", self.lang),
+                chip_glyph=chip_glyph,
+                detail_glyph=detail_glyph,
             )
             cards.append(card)
         if keep_row is not None:
@@ -3560,9 +3520,9 @@ class MainWindow(QMainWindow):
             self._update_toolbar_state("exp")
             return
 
-        base_chip = f"📝 {t('chip_expansion', self.lang)}"
-        rich_chip = f"📝 {t('chip_rich_expansion', self.lang)}"
-        secret_chip = f"🔒 {t('chip_secret', self.lang)}"
+        base_chip = t('chip_expansion', self.lang)
+        rich_chip = t('chip_rich_expansion', self.lang)
+        secret_chip = t('chip_secret', self.lang)
         cards = []
         for exp in expansions:
             card = ExpansionCard()
@@ -3575,6 +3535,7 @@ class MainWindow(QMainWindow):
                 exp.get('enabled', True),
                 is_rich=is_rich,
                 state_text=t("state_active" if exp.get('enabled', True) else "state_passive", self.lang),
+                chip_glyph=ACTION_GLYPHS["secret" if is_secret else ("rich" if is_rich else "expansion")],
             )
             cards.append(card)
         if keep_row is not None:
