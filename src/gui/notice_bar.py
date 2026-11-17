@@ -71,22 +71,3 @@ class NoticeBar(QFrame):
         else:
             super().mousePressEvent(event)
 
-
-class LinkLabel(QLabel):
-    """Altı çizili, tıklanınca tarayıcıda açan yazı. Renk temadan miras alınır (iki temada da okunur)."""
-
-    def __init__(self, text: str, url: str, parent=None):
-        super().__init__(text, parent)
-        self._url = url
-        self.setTextFormat(Qt.TextFormat.PlainText)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        font = self.font()
-        font.setUnderline(True)
-        self.setFont(font)
-        self.setToolTip(url)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and is_trusted_url(self._url):
-            QDesktopServices.openUrl(QUrl(self._url))
-        else:
-            super().mousePressEvent(event)

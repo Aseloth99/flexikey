@@ -1290,9 +1290,14 @@ def _build_qss(p: dict) -> str:
             font-weight: 600;
             min-width: 0;
         }}
+        /* tür / komut simgeleri: renk yanındaki yazıyla aynı aileden, komut simgesi bir ton sakin */
+        QLabel#card_primary_icon {{ color: {p['accent_text']}; }}
+        QLabel#card_secondary_icon {{ color: {p['text_secondary']}; }}
         /* pasif kayıt: metinler soluk (kart yine tıklanabilir, seçilip yeniden açılabilir) */
         QFrame#list_row[cardEnabled="false"] QLabel#card_secondary,
         QFrame#list_row[cardEnabled="false"] QLabel#card_primary,
+        QFrame#list_row[cardEnabled="false"] QLabel#card_primary_icon,
+        QFrame#list_row[cardEnabled="false"] QLabel#card_secondary_icon,
         QFrame#list_row[cardEnabled="false"] QLabel#card_kbd {{
             color: {p['text_muted']};
         }}
