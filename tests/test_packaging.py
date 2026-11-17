@@ -98,6 +98,8 @@ class VersionTests(unittest.TestCase):
         self.assertEqual((info.ffi.fileVersionMS, info.ffi.fileVersionLS), ((a << 16) | b, c << 16))
         strings = {s.name: s.val for s in info.kids[0].kids[0].kids}
         self.assertEqual(strings["FileVersion"], f"{a}.{b}.{c}.0")
+        # Windows bildirimlerde uygulama adı olarak açıklamayı gösterir: dile bağlı alt başlık olmasın
+        self.assertEqual(strings["FileDescription"], "FlexiKey")
 
 
 class RequirementsTests(unittest.TestCase):
