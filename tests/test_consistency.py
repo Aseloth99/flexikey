@@ -430,11 +430,13 @@ class MainWindowTests(_Base):
     def test_main_title_bar_is_38_px(self):
         bar = [w for w in self.window.findChildren(QWidget) if w.objectName() == "title_bar"][0]
         self.assertEqual(bar.height(), 38)
-        self.assertEqual((self.window.maximize_btn.text(), self.window.close_btn.text()), ("□", "×"))
+        # Büyüt/geri yükle düğmesi metin glifi değil, durumu izleyen vektör glif (bkz. test_window_glyphs)
+        self.assertEqual((self.window.maximize_btn.text(), self.window.close_btn.text()), ("", "×"))
+        self.assertEqual(self.window.maximize_btn.glyph(), "maximize")
         self.window.toggle_maximize()
-        self.assertEqual(self.window.maximize_btn.text(), "❐")
+        self.assertEqual(self.window.maximize_btn.glyph(), "restore")
         self.window.toggle_maximize()
-        self.assertEqual(self.window.maximize_btn.text(), "□")
+        self.assertEqual(self.window.maximize_btn.glyph(), "maximize")
 
     def test_empty_state_has_a_title_and_one_guiding_sentence_without_guillemets(self):
         self._set()
