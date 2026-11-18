@@ -30,6 +30,7 @@ from src.gui.message_box import MessageBox
 
 from src.gui.toolbar_icons import strip_symbols, toolbar_icon
 from src.gui.command_icons import ACTION_GLYPHS, GROUP_GLYPHS, GlyphLabel, command_glyph, glyph_icon
+from src.gui.window_glyphs import MAXIMIZE, RESTORE, UPDATE, TitleGlyphButton, readable_accent
 from src.utils.helpers import format_shortcut_for_display
 from src.utils.settings_manager import (
     DEFAULT_SETTINGS, exportable_records, is_locked_secret, is_secret_record, register_saved_items, secret_count,
@@ -2959,15 +2960,21 @@ class MainWindow(QMainWindow):
         
         layout.addStretch(1)
         
-        # Bekleyen güncellemenin sürümü: başlıkta düğme yok (menüyü sıkıştırıyordu); Ayarlar > Güncellemeler'de ve
-        # tepsi menüsünde gösterilir
+        # Bekleyen güncellemenin sürümü: başlıkta yalnızca küçük ↑ simgesi (metinli düğme menüyü sıkıştırıyordu);
+        # sürümlü "Güncelle · vX" Ayarlar > Güncellemeler'de ve tepsi menüsünde gösterilir
         self.update_version = ""
 
-        # Window controls
+        # Window controls: [↑] [─] [▢] [✕]
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(2)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        
+
+        # Güncelleme simgesi: yalnızca güncelleme beklerken görünür; vurgu renginde, Ayarlar/tepsiyle aynı pencereyi açar
+        self.update_btn = TitleGlyphButton(UPDATE, lambda _hot: readable_accent(self._title_palette()))
+        self.update_btn.clicked.connect(lambda _checked=False: self.show_pending_update())
+        self.update_btn.setVisible(False)
+        controls_layout.addWidget(self.update_btn)
+
         # Minimize button
         self.minimize_btn = QPushButton("−")
         self.minimize_btn.setObjectName("window_control_btn")
@@ -2975,14 +2982,14 @@ class MainWindow(QMainWindow):
         self.minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.minimize_btn.clicked.connect(self.showMinimized)
         controls_layout.addWidget(self.minimize_btn)
-        
-        # Maximize/Restore button
-        self.maximize_btn = QPushButton("□")
-        self.maximize_btn.setObjectName("window_control_btn")
-        self.maximize_btn.setToolTip(t("maximize", self.lang))
-        self.maximize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        # Maximize/Restore button: glif ve ipucu pencere durumunu izler (changeEvent -> _sync_maximize_button)
+        self.maximize_btn = TitleGlyphButton(
+            MAXIMIZE, lambda hot: self._title_palette()["text" if hot else "text_muted"]
+        )
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         controls_layout.addWidget(self.maximize_btn)
+        self._sync_maximize_button()
         
         # Close button
         self.close_btn = QPushButton("×")
@@ -3036,13 +3043,33 @@ class MainWindow(QMainWindow):
         event.accept()
     
     def toggle_maximize(self):
-        """Pencereyi büyüt/küçült"""
+        """Pencereyi büyüt/küçült (düğmenin glifi changeEvent'te durumdan güncellenir)"""
         if self.isMaximized():
             self.showNormal()
-            self.maximize_btn.setText("□")
         else:
             self.showMaximized()
-            self.maximize_btn.setText("❐")
+        self._sync_maximize_button()
+
+    def _title_palette(self) -> dict:
+        """Başlık glifleri her çizimde o anki temayı/vurguyu okur (tema değişince ayrıca yenilemek gerekmez)."""
+        return self.theme_manager.get_palette()
+
+    def _sync_maximize_button(self):
+        """Büyüt/geri yükle düğmesi: büyütülmüşse iki kare + "Geri Yükle", değilse tek kare + "Ekranı Kapla"."""
+        button = getattr(self, "maximize_btn", None)
+        if button is None:
+            return
+        maximized = self.isMaximized()
+        button.set_glyph(RESTORE if maximized else MAXIMIZE)
+        tip = t("restore_down" if maximized else "maximize", self.lang)
+        button.setToolTip(tip)
+        button.setAccessibleName(tip)
+
+    def changeEvent(self, event):  # noqa: N802
+        """Her pencere durumu değişiminde (düğme, başlığa çift tıklama, Win+↑/↓, Aero Snap, görev çubuğu) glifi yenile."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_maximize_button()
     
     def _build_toolbar(self, prefix, add_key, on_add, on_edit, on_delete, on_toggle, on_refresh):
         """Liste araç çubuğu: [Ekle]  [Düzenle | Aktif/Pasif | Sil]  ...boşluk...  [özet hapı]  [yenile simgesi].
@@ -3257,8 +3284,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{t('app_title', lang)} - {t('window_subtitle', lang)}")
         if hasattr(self, 'minimize_btn'):
             self.minimize_btn.setToolTip(t("minimize", lang))
-        if hasattr(self, 'maximize_btn'):
-            self.maximize_btn.setToolTip(t("maximize", lang))
+        self._sync_maximize_button()
+        self._sync_update_button()
         if hasattr(self, 'close_btn'):
             self.close_btn.setToolTip(t("close", lang))
             
@@ -3929,10 +3956,25 @@ class MainWindow(QMainWindow):
         return f"<a href='https://macik.com.tr' style='color:{color}'>macik.com.tr</a>"
 
     def set_update_available(self, version: str = ""):
-        """Bekleyen güncellemenin sürümü (boş: yok). Açık Ayarlar penceresi varsa "Güncelle · vX" düğmesi hemen güncellenir."""
+        """Bekleyen güncellemenin sürümü (boş: yok). Başlıktaki ↑ simgesi ve açık Ayarlar penceresindeki
+        "Güncelle · vX" düğmesi hemen güncellenir."""
         self.update_version = version or ""
+        self._sync_update_button()
         for dialog in self.findChildren(SettingsDialog):
             dialog.show_pending_update(self.update_version)
+
+    def _sync_update_button(self):
+        """Başlıktaki ↑: yalnızca güncelleme beklerken görünür; ipucu ve erişilebilir ad dile göre."""
+        button = getattr(self, "update_btn", None)
+        if button is None:
+            return
+        version = str(getattr(self, "update_version", "") or "")
+        if version:
+            button.setToolTip(t("update_pill_tip", self.lang).format(version=version))
+            button.setAccessibleName(t("update_short", self.lang))
+        if button.isHidden() == bool(version):
+            button.setVisible(bool(version))
+            QTimer.singleShot(0, self._fit_min_width)  # simge görününce başlık bir düğme genişler
 
     def _fit_min_width(self):
         """Pencere, başlık menüsü + güncelleme düğmesi sığacak genişliğin altına inemesin (İngilizce metinler daha uzun)."""

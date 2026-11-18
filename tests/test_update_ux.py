@@ -258,10 +258,12 @@ class SettingsUpdateButtonTest(unittest.TestCase):
         dialog.show_pending_update = lambda v: mw.SettingsDialog.show_pending_update(dialog, v)
         return dialog
 
-    def test_the_title_bar_has_no_update_button(self):
+    def test_the_title_bar_has_no_text_update_pill_only_the_arrow_icon(self):
+        # Metinli "Güncelle · vX" hapı başlıkta yok (menüyü sıkıştırıyordu); yerine metinsiz ↑ simge düğmesi var
         source = (pathlib.Path(mw.__file__)).read_text(encoding="utf-8")
         self.assertNotIn("update_pill = QPushButton", source)
         self.assertNotIn("_apply_update_pill", source)
+        self.assertIn("self.update_btn = TitleGlyphButton(UPDATE", source)
 
     def test_the_button_replaces_the_status_while_an_update_waits(self):
         dialog = self._fake_dialog()
@@ -280,7 +282,8 @@ class SettingsUpdateButtonTest(unittest.TestCase):
 
     def test_a_new_version_reaches_an_open_settings_dialog(self):
         dialog = self._fake_dialog()
-        window = types.SimpleNamespace(update_version="", findChildren=lambda cls: [dialog])
+        window = types.SimpleNamespace(update_version="", findChildren=lambda cls: [dialog],
+                                       _sync_update_button=lambda: None)
         mw.MainWindow.set_update_available(window, "1.2.3")
         self.assertEqual(window.update_version, "1.2.3")
         self.assertFalse(dialog.update_open_btn.isHidden())

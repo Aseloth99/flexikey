@@ -325,8 +325,9 @@ class FlexiKeyApp:
     # ------------------------------------------------------------------ güncelleme akışı
     def _on_update_available(self, version: str, download_url: str, release_notes: str,
                             is_mandatory: bool, file_size, checksum: str):
-        """Sessiz denetim yeni sürüm buldu: pop-up AÇILMAZ. Sürüm başlık çubuğundaki "Güncelle" düğmesinde ve
-        tepsinin en üstündeki "Güncelle · vX" satırında görünür; ikisi de güncelleme penceresini açar. "Otomatik kur"
+        """Sessiz denetim yeni sürüm buldu: pop-up AÇILMAZ. Sürüm başlık çubuğundaki ↑ simgesinde, Ayarlar'daki
+        "↑ Güncelle · vX" düğmesinde ve tepsinin en üstündeki "Güncelle · vX" satırında görünür; üçü de aynı güncelleme
+        penceresini açar. "Otomatik kur"
         açıksa uygulama kullanılmıyorken kendiliğinden kurulur."""
         previous = (self._pending_update or {}).get('version')
         self._pending_update = {

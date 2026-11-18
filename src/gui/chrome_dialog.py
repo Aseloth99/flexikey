@@ -19,8 +19,10 @@ olur ve kenarlardan (gölge payından) sistem yeniden boyutlandırması başlat�
 from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QPoint, QRectF, QSize, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QAbstractButton, QApplication, QDialog, QFrame, QScrollArea, QVBoxLayout, QWidget
+
+from src.gui.window_glyphs import MAXIMIZE, RESTORE, paint_glyph
 
 from src.gui.message_box import (  # noqa: PLC2701 (ortak modülün çerçeve parçaları; aynı projede, testle korunur)
     _SHADOW,
@@ -46,7 +48,7 @@ def _dialog_qss(p: dict) -> str:
 
 
 class _MaxButton(QAbstractButton):
-    """Başlıkta büyüt/geri al düğmesi: ana pencerenin başlığıyla aynı glif çifti (□ / ❐)."""
+    """Başlıkta büyüt/geri al düğmesi: ana pencerenin başlığıyla aynı vektör glif çifti (tek kare / iki kare)."""
 
     def __init__(self, pal: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -61,19 +63,21 @@ class _MaxButton(QAbstractButton):
         self._maximized = bool(maximized)
         self.update()
 
+    def is_maximized(self) -> bool:
+        return self._maximized
+
+    def glyph(self) -> str:
+        return RESTORE if self._maximized else MAXIMIZE
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.underMouse() or self.isDown():
             path = QPainterPath()
             path.addRoundedRect(QRectF(self.rect()), 6, 6)
             painter.fillPath(path, QColor(self._pal["surface"] if not self.isDown() else self._pal["sunken"]))
-        painter.setPen(QColor(self._pal["text"]))
-        font = QFont("Segoe UI")
-        font.setPointSize(13)
-        font.setWeight(QFont.Weight.Light)
-        painter.setFont(font)
-        painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), "❐" if self._maximized else "□")
+        paint_glyph(painter, QRectF(self.rect()), self.glyph(), QColor(self._pal["text"]))
+        painter.end()
 
     def enterEvent(self, event) -> None:
         self.update()
