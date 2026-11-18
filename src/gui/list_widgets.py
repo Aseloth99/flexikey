@@ -24,6 +24,8 @@ CARD_MAX_WIDTH = 620
 CARD_MIN_WIDTH = 300  # en dar kart: iki sütun bununla sığıyorsa liste tek sütuna düşmez
 CARD_COMFORT_WIDTH = 340  # sütun sayısı buna göre belirlenir: üçüncü sütun ancak kartlar rahat sığarsa
 CARD_MIN_TEXT = 110  # kısayol çipi uzasa bile metin sütununa kalması gereken en az genişlik
+KBD_MIN = 76  # kısayol / tetikleyici çipinin en dar hâli (kenarlık + iç boşluk dahil)
+KBD_PAD = 24  # çipin yazı dışındaki payı: 9 px iç boşluk + 1 px kenarlık her yanda, 4 px pay
 CARD_GLYPH = 14  # tür / komut simgesi (emoji yerine çizim; rengi yanındaki yazıdan gelir)
 CARD_GLYPH_GAP = 5
 GRID_GAP = 8
@@ -79,6 +81,7 @@ def _empty_pixmap(kind: str, color: QColor, size: int = 52) -> QPixmap:
 class _BaseCard(QFrame):
     clicked = pyqtSignal()
     double_clicked = pyqtSignal()
+    KBD_CAP = 220  # çipin en geniş hâli; "Ctrl + Alt + Shift + Backspace" gibi kısayollar sığar
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,6 +96,7 @@ class _BaseCard(QFrame):
         self._primary_full = ""
         self._secondary_full = ""
         self._kbd_full = ""
+        self._kbd_column = 0  # listenin verdiği ortak çip genişliği (0: henüz verilmedi)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 12, 8)  # yan cubuk kartin kenarina yapismasin: ustten/alttan pay
@@ -113,9 +117,10 @@ class _BaseCard(QFrame):
         self.kbd_label = QLabel()
         self.kbd_label.setObjectName("card_kbd")
         self.kbd_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.kbd_label.setMaximumWidth(240)  # "Ctrl + Alt + Shift + Backspace" gibi uzun kısayollar kırpılmasın
-        # Yer daralınca önce kısayol çipi kısalır ("…", tam hâli kartın ipucunda); metin sütunu CARD_MIN_TEXT'te kalır.
-        self.kbd_label.setMinimumWidth(56)
+        # Listedeki bütün çipler aynı genişlikte (liste belirler, set_kbd_column): metin sütunları hizalı başlar.
+        # Uzun çip "…" ile kısalır, tam hâli kartın ipucunda.
+        self.kbd_label.setMinimumWidth(KBD_MIN)
+        self.kbd_label.setMaximumWidth(self.KBD_CAP)
         self.kbd_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         root.addWidget(self.kbd_label, 0, Qt.AlignmentFlag.AlignVCenter)
         _transparent(self.kbd_label)
@@ -177,25 +182,44 @@ class _BaseCard(QFrame):
         self.primary_icon.set_glyph(primary)
         self.secondary_icon.set_glyph(secondary if self._secondary_full else "")
 
+    def natural_kbd_width(self) -> int:
+        """Çipin tam yazısı için gereken genişlik (KBD_MIN..KBD_CAP)."""
+        text = " ".join((self._kbd_full or self.kbd_label.text()).split())
+        hint = QFontMetrics(self.kbd_label.font()).horizontalAdvance(text) + KBD_PAD
+        return min(self.KBD_CAP, max(KBD_MIN, hint))
+
+    def set_kbd_column(self, width: int):
+        """Listenin ortak çip genişliği: kısa çip de bu genişlikte durur, uzun olan kısalır."""
+        width = max(KBD_MIN, int(width))
+        self._kbd_column = width
+        if self.kbd_label.minimumWidth() == width == self.kbd_label.maximumWidth():
+            return
+        self.kbd_label.setFixedWidth(width)
+        self._apply_elide()
+
+    def base_width(self) -> int:
+        """Çip dışındaki her şeyin (yan çubuk, nokta, en dar metin sütunu, rozet, boşluklar) kapladığı genişlik."""
+        margins = self.layout().contentsMargins()
+        text_w = CARD_MIN_TEXT
+        if self.primary_icon.glyph() or self.secondary_icon.glyph():
+            text_w += CARD_GLYPH + CARD_GLYPH_GAP
+        widths = [4, 8, text_w]
+        if self.badge_label.isVisibleTo(self):
+            widths.append(self.badge_label.sizeHint().width())
+        spacing = self.layout().spacing() * len(widths)  # + çipin kendi aralığı
+        return margins.left() + margins.right() + sum(widths) + spacing
+
     def required_width(self) -> int:
         """Kısayol çipi tam, metin sütunu en az CARD_MIN_TEXT görünsün diye gereken genişlik.
 
         "Aktif / Pasif" hapı sayılmaz: yer yoksa gizlenir (durumu renkli nokta zaten gösterir)."""
-        margins = self.layout().contentsMargins()
-        kbd_hint = QFontMetrics(self.kbd_label.font()).horizontalAdvance(self._kbd_full or self.kbd_label.text()) + 24
-        kbd_w = min(240, max(56, kbd_hint))
-        text_w = CARD_MIN_TEXT
-        if self.primary_icon.glyph() or self.secondary_icon.glyph():
-            text_w += CARD_GLYPH + CARD_GLYPH_GAP
-        widths = [4, 8, kbd_w, text_w]  # yan çubuk, durum noktası, kısayol çipi, metin (+ simge)
-        if self.badge_label.isVisibleTo(self):
-            widths.append(self.badge_label.sizeHint().width())
-        spacing = self.layout().spacing() * (len(widths) - 1)
-        return margins.left() + margins.right() + sum(widths) + spacing
+        return self.base_width() + self.natural_kbd_width()
 
     def pill_fits(self, width: int) -> bool:
-        """Bu genişlikte kısayol çipi ve metin sığdıktan sonra durum hapına da yer kalır mı?"""
-        return width - self.required_width() >= self.state_label.sizeHint().width() + self.layout().spacing()
+        """Bu genişlikte kısayol çipi (listenin ortak genişliğinde) ve metin sığdıktan sonra durum hapına yer kalır mı?"""
+        kbd_w = self._kbd_column or self.natural_kbd_width()
+        used = self.base_width() + kbd_w
+        return width - used >= self.state_label.sizeHint().width() + self.layout().spacing()
 
     def _fit_state_pill(self):
         """Durum hapı yalnızca yer kalırsa görünür (durumu renkli nokta zaten gösterir)."""
@@ -276,6 +300,7 @@ class HotkeyCard(_BaseCard):
 
 
 class ExpansionCard(_BaseCard):
+    KBD_CAP = 130  # tetikleyici serbest metin: çok uzun olan bütün sütunu genişletmesin, "…" ile kısalır
     def set_data(self, trigger: str, chip: str, detail: str, enabled: bool, is_rich: bool = False, state_text: str = "",
                  chip_glyph: str = "", detail_glyph: str = ""):
         self.set_enabled_state(enabled, state_text)
@@ -413,8 +438,20 @@ class CardListWidget(QScrollArea):
         available = (inner - GRID_GAP * (cols - 1)) // cols
         return max(CARD_MIN_WIDTH, min(CARD_MAX_WIDTH, available))
 
+    def kbd_column_width(self, card_width: int) -> int:
+        """Bütün çiplerin ortak genişliği: en uzun çipin tam hâli (kart türünün sınırına kadar), metin sütununa
+        CARD_MIN_TEXT kalacak kadar. Böylece "Ctrl + M" ile "Ctrl + Shift + 1" kartlarının yazıları aynı yerden başlar."""
+        if not self._cards:
+            return KBD_MIN
+        natural = max(card.natural_kbd_width() for card in self._cards)
+        room = card_width - max(card.base_width() for card in self._cards)
+        return max(KBD_MIN, min(natural, room))
+
     def _apply_card_sizes(self):
         width = self._card_width()
+        column = self.kbd_column_width(width)
+        for card in self._cards:
+            card.set_kbd_column(column)
         # Hap bazı kartlarda görünüp bazılarında görünmesin: ya hepsine sığar ya hiçbirinde gösterilmez.
         allowed = all(card.pill_fits(width) for card in self._cards if card._has_state)
         for card in self._cards:
