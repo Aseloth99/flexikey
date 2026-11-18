@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QMenu, QSizePolicy, QApplication, QScrollArea, QGridLayout, QButtonGroup
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QEvent
-from PyQt6.QtGui import QIcon, QKeySequence, QAction, QKeyEvent, QActionGroup, QCursor
+from PyQt6.QtGui import QIcon, QKeySequence, QAction, QKeyEvent, QActionGroup, QCursor, QShortcut
 import sys
 import time
 from src.utils.locales import AUTO_LANGUAGE, get_active_language, install_qt_translations, language_choices, t
@@ -93,6 +93,13 @@ class EnhancedKeySequenceEdit(QLineEdit):
         
     def get_shortcut(self) -> str:
         return self._shortcut
+
+    def event(self, event):
+        # Kısayol yakalanırken pencerenin kısayolları (Ctrl+Enter = Kaydet) tuşu kapmasın: Ctrl+Enter de kaydedilebilsin.
+        if event.type() == QEvent.Type.ShortcutOverride:
+            event.accept()
+            return True
+        return super().event(event)
 
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
@@ -393,6 +400,36 @@ class FramelessResizableDialog(QDialog):
 
     _RESIZE_CORNER = 20
     _RESIZE_EDGE = 8
+
+    def _setup_save_keys(self, save_btn: QPushButton, btn_layout: QHBoxLayout):
+        """Ctrl+Enter kaydeder. Düz Enter kaydetmez: metin kutusunda alt satıra, tek satırlık alanda sonrakine geçer."""
+        self._save_btn = save_btn
+        for seq in ("Ctrl+Return", "Ctrl+Enter"):
+            shortcut = QShortcut(QKeySequence(seq), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(save_btn.click)
+        save_btn.setToolTip(t("save_shortcut_tip", self.lang))
+        hint = QLabel(t("save_shortcut_hint", self.lang))
+        hint.setObjectName("hint_label")  # tema: soluk, küçük yazı
+        hint.setProperty("save_hint", True)
+        btn_layout.insertWidget(0, hint, 0, Qt.AlignmentFlag.AlignVCenter)
+        # QDialog Enter'da "varsayılan" düğmeye basar (ilk düğme: Biçimsiz Yapıştır vb.); hiçbiri varsayılan olmasın.
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
+            button.setDefault(False)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            focus = self.focusWidget()
+            if isinstance(focus, QPushButton) and focus.isEnabled():
+                focus.click()
+            elif isinstance(focus, (QLineEdit, QComboBox, QCheckBox)):
+                self.focusNextChild()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _init_frameless_resize(self):
         self._resize_edge = None
@@ -1941,6 +1978,7 @@ class HotkeyDialog(FramelessResizableDialog):
         
         chrome_layout.addWidget(body, 1)
         outer_layout.addWidget(self.chrome)
+        self._setup_save_keys(save_btn, btn_layout)
         
         self.on_action_type_changed(0)
     
@@ -2292,6 +2330,7 @@ class ExpansionDialog(FramelessResizableDialog):
         
         chrome_layout.addWidget(body, 1)
         outer_layout.addWidget(self.chrome)
+        self._setup_save_keys(save_btn, btn_layout)
     
     def paste_plain_text(self):
         """Biçimsiz yapıştırma - HTML/biçim kodları olmadan"""

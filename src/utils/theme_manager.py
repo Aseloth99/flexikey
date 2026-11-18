@@ -1276,8 +1276,6 @@ def _build_qss(p: dict) -> str:
             padding: 3px 9px;
             font-size: 9pt;
             font-weight: 700;
-            min-width: 56px;
-            max-width: 240px;
         }}
         QLabel#card_primary {{
             color: {p['accent_text']};
