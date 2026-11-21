@@ -1328,6 +1328,11 @@ def _build_qss(p: dict) -> str:
             font-size: 8.5pt;
             font-weight: 600;
         }}
+        /* yeni eklenen / geri alınan kart: kısa süre belirgin vurgu (seçili görünümün bir tık güçlüsü) */
+        QFrame#list_row[flash="true"] {{
+            background-color: {_mix(p['accent'], p['surface2'], 0.40 if p['is_dark'] else 0.30)};
+            border: 2px solid {p['accent']};
+        }}
         QFrame#list_empty {{
             background-color: transparent;
             border: none;
@@ -1336,6 +1341,50 @@ def _build_qss(p: dict) -> str:
             color: {p['text']};
             font-size: 12pt;
             font-weight: 700;
+        }}
+
+        /* ── Liste süzgeci (Ctrl+F) ── */
+        QLineEdit#list_filter {{
+            padding: 6px 12px;
+            border-radius: 9px;
+        }}
+        QLineEdit#list_filter:focus {{
+            padding: 5px 11px;
+        }}
+
+        /* ── Pencere içi bildirim (toast) ── */
+        QFrame#toast {{
+            background-color: {'#2c2c2c' if p['is_dark'] else '#ffffff'};
+            border: 1px solid {p['border_strong']};
+            border-left: 3px solid {p['accent']};
+            border-radius: 10px;
+        }}
+        QFrame#toast[kind="success"] {{
+            border-left-color: {p['success']};
+        }}
+        QFrame#toast[kind="error"] {{
+            border-left-color: {p['danger']};
+        }}
+        QLabel#toast_text {{
+            color: {p['text']};
+            background: transparent;
+            font-weight: 600;
+        }}
+        QPushButton#toast_action {{
+            background-color: transparent;
+            color: {p['accent_text']};
+            border: none;
+            border-radius: 7px;
+            padding: 0px 10px;
+            min-height: 24px;
+            max-height: 24px;
+            font-weight: 700;
+        }}
+        QPushButton#toast_action:hover {{
+            background-color: {p['accent_soft']};
+        }}
+        QPushButton#toast_action:pressed {{
+            background-color: {p['surface_active']};
         }}
 
         /* ── CheckBox ── */

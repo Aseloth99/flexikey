@@ -27,6 +27,9 @@ from src.utils.theme_manager import (
 )
 from src.gui.list_widgets import CardListWidget, HotkeyCard, ExpansionCard
 from src.gui.message_box import MessageBox
+from src.gui.hover_fix import settle_hover_after_menu
+from src.gui.toast import toast_for
+from src.gui import window_geometry
 
 from src.gui.toolbar_icons import strip_symbols, toolbar_icon
 from src.gui.command_icons import ACTION_GLYPHS, GROUP_GLYPHS, GlyphLabel, command_glyph, glyph_icon
@@ -41,6 +44,35 @@ try:
     import winreg
 except ImportError:
     winreg = None
+
+
+def _feedback(window, text: str, kind: str = "success", action_text: str = "", action=None,
+              duration_ms: int | None = None) -> None:
+    """Uygulama içi bir işlemin sonucu (kaydedildi, silindi, dışa aktarıldı...).
+
+    Pencere (ya da üstündeki Ayarlar gibi bir pencere) görünüyorsa pencere içinde kısa bir toast; görünmüyorsa
+    (tepsideyken) masaüstü bildirimi (o da yalnızca kullanıcı bildirimleri açtıysa). Aynı şey iki kez söylenmez."""
+    show = getattr(window, "show_toast", None)
+    if callable(show) and show(text, kind, action_text, action, duration_ms):
+        return
+    notifier = getattr(window, "notification_manager", None)
+    if notifier is not None:
+        {"success": notifier.success, "error": notifier.error}.get(kind, notifier.info)(text)
+
+
+def _open_containing_folder(path: str) -> None:
+    """Dosyanın klasörünü açar; Windows'ta Gezgin dosyayı seçili gösterir."""
+    path = os.path.normpath(os.path.abspath(path))
+    if sys.platform == "win32" and os.path.exists(path):
+        import subprocess
+        try:
+            subprocess.Popen(["explorer", "/select,", path])
+            return
+        except OSError:
+            pass
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QDesktopServices
+    QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
 
 
 class EnhancedKeySequenceEdit(QLineEdit):
@@ -1346,9 +1378,8 @@ class SettingsDialog(QDialog):
         # Açılışta Başlat (Windows: Run kaydı; macOS/Linux: LaunchAgent / autostart)
         self._set_startup(self.start_at_login_check.isChecked())
         
-        # Bildirimleri güncelle
+        # Bildirimleri güncelle ("Kaydedildi" geri bildirimini pencere kapandıktan sonra ana pencere verir)
         self.notification_manager.set_enabled(self.show_notif_check.isChecked())
-        self.notification_manager.success(t("settings_saved", self.lang))
         self.accept()
     
     def _on_export_clicked(self):
@@ -2479,10 +2510,18 @@ class MainWindow(QMainWindow):
         self._resize_start = None
         self._resize_geom = None
         self._override_shape = None
+        self._drag_press_global = None
+        self._system_move_started = False
         app = QApplication.instance()
         if app is not None:
             app.installEventFilter(self)
-    
+
+        # Boyut / konum / büyütülmüş durum bir önceki açılıştan; uygulama kısayolları (kılavuzdakiler)
+        self._was_shown = False
+        self._geometry_saved = None
+        self._restore_window_geometry()
+        self._install_window_shortcuts()
+        
     def _on_system_scheme_changed(self, *_):
         settings = self.settings_manager.load_settings()
         if settings.get('theme', 'system') == 'system':
@@ -2526,6 +2565,7 @@ class MainWindow(QMainWindow):
         self.file_menu = QMenu()
         self.create_file_menu(self.file_menu)
         self.file_menu_btn.setMenu(self.file_menu)
+        settle_hover_after_menu(self.file_menu_btn, self.file_menu)
         menubar_layout.addWidget(self.file_menu_btn)
         
         # 2. Tema Menüsü (Doğrudan Sistem, Koyu, Açık)
@@ -2536,6 +2576,7 @@ class MainWindow(QMainWindow):
         self.theme_menu = QMenu()
         self.create_theme_menu(self.theme_menu)
         self.theme_menu_btn.setMenu(self.theme_menu)
+        settle_hover_after_menu(self.theme_menu_btn, self.theme_menu)
         menubar_layout.addWidget(self.theme_menu_btn)
 
         # 3. Dil Menüsü (Doğrudan bayraklarla)
@@ -2546,6 +2587,7 @@ class MainWindow(QMainWindow):
         self.lang_menu = QMenu()
         self.create_language_menu(self.lang_menu)
         self.lang_menu_btn.setMenu(self.lang_menu)
+        settle_hover_after_menu(self.lang_menu_btn, self.lang_menu)
         menubar_layout.addWidget(self.lang_menu_btn)
 
         # 4. Renk Menüsü (Doğrudan 10 vurgu rengiyle)
@@ -2558,6 +2600,7 @@ class MainWindow(QMainWindow):
         self.color_menu = QMenu()
         self.create_accent_menu(self.color_menu)
         self.color_menu_btn.setMenu(self.color_menu)
+        settle_hover_after_menu(self.color_menu_btn, self.color_menu)
         menubar_layout.addWidget(self.color_menu_btn)
 
         # 5. Ayarlar Menüsü (En sağda)
@@ -2568,6 +2611,7 @@ class MainWindow(QMainWindow):
         self.settings_menu = QMenu()
         self.create_settings_help_menu(self.settings_menu)
         self.settings_menu_btn.setMenu(self.settings_menu)
+        settle_hover_after_menu(self.settings_menu_btn, self.settings_menu)
         menubar_layout.addWidget(self.settings_menu_btn)
     
     def create_file_menu(self, menu):
@@ -2673,6 +2717,13 @@ class MainWindow(QMainWindow):
     
     def keyPressEvent(self, event: QKeyEvent):
         """Klavye olayları"""
+        if event.key() == Qt.Key.Key_Escape and hasattr(self, 'tabs'):
+            prefix = self._current_prefix()
+            edit = getattr(self, f"{prefix}_filter", None)
+            if edit is not None and (edit.isVisible() or edit.text()):
+                self._close_filter(prefix)
+                event.accept()
+                return
         if event.key() == Qt.Key.Key_Space:
             focus_widget = self.focusWidget()
             if hasattr(self, 'hotkeys_list') and hasattr(self, 'expansions_list'):
@@ -2695,6 +2746,7 @@ class MainWindow(QMainWindow):
     
     def showEvent(self, event):
         super().showEvent(event)
+        self._was_shown = True
         apply_window_rounding(self)
         if hasattr(self, 'app_chrome'):
             apply_rounded_mask(self.app_chrome, 12)
@@ -2864,10 +2916,162 @@ class MainWindow(QMainWindow):
 
     def hideEvent(self, event):
         self._clear_resize_cursor()
+        self.save_window_geometry()  # tepsiye gizlenirken (ve simge durumuna küçülürken) boyut/konum saklanır
         super().hideEvent(event)
+
+    # ------------------------------------------------------------------ boyut / konum hatırlama
+    def _restore_window_geometry(self):
+        """Kayıtlı boyut/konum/büyütülmüş durumu uygular; pencere görünür bir ekrana sığdırılır."""
+        try:
+            raw = self.settings_manager.load_settings().get(window_geometry.SETTINGS_KEY)
+        except Exception:
+            return
+        saved = window_geometry.geometry_from_dict(raw)
+        if saved is None:
+            return
+        rect, maximized = saved
+        screens = []
+        primary = QApplication.primaryScreen()
+        if primary is not None:
+            screens.append(primary.availableGeometry())
+        screens += [screen.availableGeometry() for screen in QApplication.screens() if screen is not primary]
+        rect = window_geometry.clamp_to_screens(rect, screens, (self.minimumWidth(), self.minimumHeight()))
+        self.setGeometry(rect)
+        if maximized:
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+        self._geometry_saved = window_geometry.geometry_to_dict(rect, maximized)
+
+    def _current_geometry(self) -> dict:
+        state = self.windowState()
+        maximized = bool(state & Qt.WindowState.WindowMaximized)
+        rect = self.geometry()
+        if state & (Qt.WindowState.WindowMaximized | Qt.WindowState.WindowMinimized | Qt.WindowState.WindowFullScreen):
+            normal = self.normalGeometry()
+            if normal.isValid() and not normal.isEmpty():
+                rect = normal
+        return window_geometry.geometry_to_dict(rect, maximized)
+
+    def save_window_geometry(self):
+        """Boyut/konum/büyütülmüş durumu ayarlara yazar (pencere hiç gösterilmediyse ya da değişmediyse yazmaz)."""
+        if not getattr(self, '_was_shown', False):
+            return
+        current = self._current_geometry()
+        if current == getattr(self, '_geometry_saved', None):
+            return
+        try:
+            self.settings_manager.update(**{window_geometry.SETTINGS_KEY: current})
+            self._geometry_saved = current
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ uygulama kısayolları
+    def _install_window_shortcuts(self):
+        """Kılavuzda yazan pencere kısayolları: Ctrl+T tema (açık/koyu), F5 listeyi yenile, Ctrl+F listede ara."""
+        self._window_shortcuts = {}
+        for seq, handler in (("Ctrl+T", self.toggle_theme), ("F5", self.refresh_current_list),
+                             ("Ctrl+F", self.focus_filter)):
+            shortcut = QShortcut(QKeySequence(seq), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(handler)
+            self._window_shortcuts[seq] = shortcut
+
+    def refresh_current_list(self):
+        """F5: açık sekmenin listesini ayarlardan yeniden yükler."""
+        if self.tabs.currentIndex() == 0:
+            self.load_hotkeys()
+        else:
+            self.load_expansions()
+
+    # ------------------------------------------------------------------ pencere içi geri bildirim (toast)
+    def _toast_host(self):
+        """Toast'ın görüneceği yer: açık bir modal pencere (Ayarlar gibi) varsa onun içi, yoksa ana pencere.
+        Hiçbiri görünmüyorsa (tepsideyken) None."""
+        modal = QApplication.activeModalWidget()
+        if modal is not None and modal is not self and modal.isVisible():
+            return modal
+        if self.isVisible() and not self.isMinimized():
+            return getattr(self, 'app_chrome', None) or self
+        return None
+
+    def show_toast(self, text: str, kind: str = "success", action_text: str = "", action=None,
+                   duration_ms: int | None = None) -> bool:
+        """Pencere içi kısa bildirim. Gösterecek görünür pencere yoksa False (çağıran masaüstü bildirimine düşer)."""
+        host = self._toast_host()
+        if host is None:
+            return False
+        toast_for(host).show_message(text, kind, action_text, action, duration_ms)
+        return True
+
+    def current_toast(self):
+        host = self._toast_host()
+        return getattr(host, "_flexikey_toast", None) if host is not None else None
+
+    # ------------------------------------------------------------------ liste süzgeci (Ctrl+F)
+    def _current_prefix(self) -> str:
+        return "hotkey" if self.tabs.currentIndex() == 0 else "exp"
+
+    def _list_for(self, prefix: str):
+        return self.hotkeys_list if prefix == "hotkey" else self.expansions_list
+
+    def _build_filter(self, prefix: str) -> QLineEdit:
+        edit = QLineEdit()
+        edit.setObjectName("list_filter")
+        edit.setProperty("list_prefix", prefix)
+        edit.setClearButtonEnabled(True)
+        edit.setPlaceholderText(t("filter_placeholder", self.lang))
+        edit.textChanged.connect(lambda _text, p=prefix: self._apply_filter(p))
+        edit.setVisible(False)
+        setattr(self, f"{prefix}_filter", edit)
+        return edit
+
+    def _apply_filter(self, prefix: str):
+        edit = getattr(self, f"{prefix}_filter", None)
+        if edit is None:
+            return
+        text = edit.text().strip()
+        self._list_for(prefix).set_filter(
+            text, t("filter_no_results", self.lang).format(text), t("filter_no_results_hint", self.lang))
+        self._update_toolbar_state(prefix)
+
+    def focus_filter(self):
+        """Ctrl+F: açık sekmenin arama kutusunu gösterir ve odaklar."""
+        edit = getattr(self, f"{self._current_prefix()}_filter", None)
+        if edit is None:
+            return
+        edit.setVisible(True)
+        edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        edit.selectAll()
+
+    def _close_filter(self, prefix: str):
+        """Esc: aramayı temizler, kutuyu gizler, odak listeye döner."""
+        edit = getattr(self, f"{prefix}_filter", None)
+        if edit is None:
+            return
+        edit.clear()
+        edit.setVisible(False)
+        self._list_for(prefix).setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _reveal_row(self, prefix: str, row: int):
+        """Yeni eklenen / geri getirilen öğe: süzgeç onu gizliyorsa süzgeç kalkar; kart seçilir, görünür alana
+        kaydırılır ve kısa süre vurgulanır."""
+        listing = self._list_for(prefix)
+        if row not in listing.visible_indices():
+            self._close_filter(prefix)
+        listing.flash_row(row)
 
     def eventFilter(self, watched, event):
         et = event.type()
+        if et == QEvent.Type.KeyPress and isinstance(watched, QLineEdit) and watched.objectName() == "list_filter" \
+                and watched.window() is self:
+            prefix = watched.property("list_prefix")
+            key = event.key()
+            if key == Qt.Key.Key_Escape:
+                self._close_filter(prefix)
+                return True
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._list_for(prefix).setFocus(Qt.FocusReason.TabFocusReason)  # oklar / Enter listede sürer
+                return True
+            return super().eventFilter(watched, event)
         if et not in (
             QEvent.Type.MouseMove,
             QEvent.Type.HoverMove,
@@ -3058,9 +3262,22 @@ class MainWindow(QMainWindow):
                 event.accept()
                 return
             self.dragging = True
+            self._system_move_started = False
+            self._drag_press_global = event.globalPosition().toPoint()
             self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
-    
+
+    def _start_system_move(self) -> bool:
+        """Taşımayı Windows'a devreder: Aero Snap (kenara/köşeye yaslama, üste sürükleyince ekranı kaplama) ve
+        sallayınca küçültme böylece çerçevesiz pencerede de çalışır. Desteklenmiyorsa False."""
+        handle = self.windowHandle()
+        if handle is None:
+            return False
+        try:
+            return bool(handle.startSystemMove())
+        except Exception:
+            return False
+
     def title_bar_mouse_move(self, event):
         """Title bar'da sürüklenirken / köşeden boyutlandırırken"""
         if self._resize_edge and self._resize_start is not None:
@@ -3070,12 +3287,24 @@ class MainWindow(QMainWindow):
         local = self.mapFromGlobal(event.globalPosition().toPoint())
         self._apply_edge_cursor(local)
         if self.dragging and event.buttons() == Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self.drag_position)
+            pos = event.globalPosition().toPoint()
+            start = self._drag_press_global or pos
+            # Tıklama / çift tıklama bozulmasın diye sistem taşıması ancak fare gerçekten sürüklenince başlar
+            if not self._system_move_started and (pos - start).manhattanLength() >= QApplication.startDragDistance():
+                self._system_move_started = True
+                if self._start_system_move():
+                    self.dragging = False  # bırakma olayını Windows yutar; durum burada sıfırlanır
+                    event.accept()
+                    return
+            if not self.isMaximized():  # yedek yol (sistem taşıması yoksa): pencereyi kendimiz taşırız
+                self.move(pos - self.drag_position)
             event.accept()
-    
+
     def title_bar_mouse_release(self, event):
         """Title bar'dan bırakıldığında"""
         self.dragging = False
+        self._system_move_started = False
+        self._drag_press_global = None
         self._resize_edge = None
         self._resize_start = None
         self._resize_geom = None
@@ -3239,9 +3468,11 @@ class MainWindow(QMainWindow):
         toolbar = self._build_toolbar("hotkey", "btn_short_add", self.add_hotkey, self.edit_hotkey,
                                       self.delete_hotkey, self.toggle_hotkey, self.load_hotkeys)
         layout.addLayout(toolbar)
-        
+        layout.addWidget(self._build_filter("hotkey"))
+
         self.hotkeys_list = CardListWidget()
         self.hotkeys_list.activated.connect(lambda row: self.edit_hotkey(row))
+        self.hotkeys_list.delete_requested.connect(lambda row: self.delete_hotkey(row))
         self._selected_hotkey_row = -1
         self.hotkeys_list.selection_changed.connect(self._on_hotkey_selection_changed)
         self.hotkeys_list.reordered.connect(self._on_hotkeys_reordered)
@@ -3258,9 +3489,11 @@ class MainWindow(QMainWindow):
         toolbar = self._build_toolbar("exp", "btn_exp_add", self.add_expansion, self.edit_expansion,
                                       self.delete_expansion, self.toggle_expansion, self.load_expansions)
         layout.addLayout(toolbar)
-        
+        layout.addWidget(self._build_filter("exp"))
+
         self.expansions_list = CardListWidget()
         self.expansions_list.activated.connect(lambda row: self.edit_expansion(row))
+        self.expansions_list.delete_requested.connect(lambda row: self.delete_expansion(row))
         self._selected_expansion_row = -1
         self.expansions_list.selection_changed.connect(self._on_expansion_selection_changed)
         self.expansions_list.reordered.connect(self._on_expansions_reordered)
@@ -3276,6 +3509,7 @@ class MainWindow(QMainWindow):
             if new_lang != self.lang:
                 self.lang = new_lang
                 self._retranslate_ui()
+            _feedback(self, t("settings_saved", self.lang))
     
     def _retranslate_ui(self):
         """Arayüz metinlerini seçili dile göre güncelle"""
@@ -3336,13 +3570,18 @@ class MainWindow(QMainWindow):
 
         for prefix in ("hotkey", "exp"):
             self._update_toolbar_state(prefix)
+            edit = getattr(self, f"{prefix}_filter", None)
+            if edit is not None:
+                edit.setPlaceholderText(t("filter_placeholder", lang))
 
         if hasattr(self, 'tray_manager') and self.tray_manager:
             self.tray_manager.retranslate(lang)
             
         self.load_hotkeys()
         self.load_expansions()
-    
+        for prefix in ("hotkey", "exp"):
+            self._apply_filter(prefix)  # "sonuç yok" yazısı da yeni dilde
+
     def load_data(self):
         settings = self.settings_manager.load_settings()
         
@@ -3398,18 +3637,18 @@ class MainWindow(QMainWindow):
         self._update_toolbar_state("exp")
 
     def _resolve_hotkey_row(self, row=None) -> int:
-        if isinstance(row, int) and row >= 0:
+        if isinstance(row, int) and not isinstance(row, bool) and row >= 0:
             return row
         idx = self.hotkeys_list.selected_index()
-        if idx >= 0:
-            return idx
+        if idx >= 0 or self.hotkeys_list.filter_text():
+            return idx  # süzgeçte gizlenen kart seçili sayılmaz (görünmeyen öğe silinmesin / düzenlenmesin)
         return getattr(self, '_selected_hotkey_row', -1)
 
     def _resolve_expansion_row(self, row=None) -> int:
-        if isinstance(row, int) and row >= 0:
+        if isinstance(row, int) and not isinstance(row, bool) and row >= 0:
             return row
         idx = self.expansions_list.selected_index()
-        if idx >= 0:
+        if idx >= 0 or self.expansions_list.filter_text():
             return idx
         return getattr(self, '_selected_expansion_row', -1)
 
@@ -3646,8 +3885,10 @@ class MainWindow(QMainWindow):
                     data.get('is_rich', False), secret=data.get('is_secret', False)
                 )
             
-            self.load_hotkeys()
-            self.notification_manager.success(t("hotkey_added", self.lang).format(format_shortcut_for_display(data['shortcut'])))
+            row = len(self.settings_manager.load_settings().get('hotkeys', [])) - 1
+            self.load_hotkeys(keep_row=row)
+            self._reveal_row("hotkey", row)
+            _feedback(self, t("hotkey_added", self.lang).format(format_shortcut_for_display(data['shortcut'])))
     
     def edit_hotkey(self, row=None):
         row = self._resolve_hotkey_row(row)
@@ -3670,11 +3911,11 @@ class MainWindow(QMainWindow):
                     new_data.get('is_rich', False), secret=new_data.get('is_secret', False)
                 )
             
-            self.load_hotkeys()
-            self.notification_manager.success(t("hotkey_updated", self.lang).format(format_shortcut_for_display(new_data['shortcut'])))
+            self.load_hotkeys(keep_row=row)
+            _feedback(self, t("hotkey_updated", self.lang).format(format_shortcut_for_display(new_data['shortcut'])))
     
-    def delete_hotkey(self):
-        row = self._resolve_hotkey_row()
+    def delete_hotkey(self, row=None):
+        row = self._resolve_hotkey_row(row)
         if row < 0:
             return   # seçim yok: düğmeler pasif, diyalog açılmaz
         
@@ -3690,9 +3931,30 @@ class MainWindow(QMainWindow):
             
             self.hotkey_manager.remove_hotkey(hotkey['shortcut'])
             self.settings_manager.remove_hotkey(hotkey['shortcut'])
-            
+
             self.load_hotkeys()
-            self.notification_manager.success(t("hotkey_deleted", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])))
+            # "Geri Al": kayıt (gizli değer dahil, yalnızca bellekte) birkaç saniye tutulur, eski yerine geri konur
+            _feedback(self, t("hotkey_deleted", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])),
+                      "info", t("toast_undo", self.lang), lambda h=hotkey, r=row: self._restore_hotkey(h, r))
+
+    def _restore_hotkey(self, hotkey: dict, row: int):
+        """Silinen kısayolu eski sırasına geri koyar (bu arada aynı kısayol yeniden eklendiyse dokunmaz)."""
+        label = format_shortcut_for_display(hotkey.get('shortcut', ''))
+        if any(h.get('shortcut') == hotkey.get('shortcut') for h in self.settings_manager.load_settings().get('hotkeys', [])):
+            _feedback(self, t("restore_conflict", self.lang).format(label), "error")
+            return
+        with self.settings_manager.transaction() as settings:
+            items = settings['hotkeys']
+            row = max(0, min(row, len(items)))
+            items.insert(row, hotkey)
+        if hotkey.get('enabled', True) and not is_locked_secret(hotkey):
+            self.hotkey_manager.add_hotkey(
+                hotkey['shortcut'], hotkey['action_type'], hotkey['action_value'],
+                hotkey.get('is_rich', False), secret=is_secret_record(hotkey)
+            )
+        self.load_hotkeys(keep_row=row)
+        self._reveal_row("hotkey", row)
+        _feedback(self, t("hotkey_restored", self.lang).format(label))
     
     def toggle_hotkey(self):
         row = self._resolve_hotkey_row()
@@ -3710,10 +3972,10 @@ class MainWindow(QMainWindow):
                     hotkey['shortcut'], hotkey['action_type'], hotkey['action_value'],
                     hotkey.get('is_rich', False), secret=is_secret_record(hotkey)
                 )
-            self.notification_manager.success(t("hotkey_enabled", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])))
+            _feedback(self, t("hotkey_enabled", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])))
         else:
             self.hotkey_manager.remove_hotkey(hotkey['shortcut'])
-            self.notification_manager.info(t("hotkey_disabled", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])))
+            _feedback(self, t("hotkey_disabled", self.lang).format(format_shortcut_for_display(hotkey['shortcut'])), "info")
 
         self.load_hotkeys(keep_row=row)
     
@@ -3737,8 +3999,10 @@ class MainWindow(QMainWindow):
                     data.get('is_rich', False)
                 )
             
-            self.load_expansions()
-            self.notification_manager.success(t("expansion_added", self.lang).format(data['trigger']))
+            row = len(self.settings_manager.load_settings().get('expansions', [])) - 1
+            self.load_expansions(keep_row=row)
+            self._reveal_row("exp", row)
+            _feedback(self, t("expansion_added", self.lang).format(data['trigger']))
     
     def edit_expansion(self, row=None):
         row = self._resolve_expansion_row(row)
@@ -3761,11 +4025,11 @@ class MainWindow(QMainWindow):
                     new_data.get('is_rich', False)
                 )
             
-            self.load_expansions()
-            self.notification_manager.success(t("expansion_updated", self.lang).format(new_data['trigger']))
+            self.load_expansions(keep_row=row)
+            _feedback(self, t("expansion_updated", self.lang).format(new_data['trigger']))
     
-    def delete_expansion(self):
-        row = self._resolve_expansion_row()
+    def delete_expansion(self, row=None):
+        row = self._resolve_expansion_row(row)
         if row < 0:
             return   # seçim yok: düğmeler pasif, diyalog açılmaz
         
@@ -3781,9 +4045,26 @@ class MainWindow(QMainWindow):
             
             self.hotkey_manager.remove_expansion(exp['trigger'])
             self.settings_manager.remove_expansion(exp['trigger'])
-            
+
             self.load_expansions()
-            self.notification_manager.success(t("expansion_deleted", self.lang).format(exp['trigger']))
+            _feedback(self, t("expansion_deleted", self.lang).format(exp['trigger']),
+                      "info", t("toast_undo", self.lang), lambda e=exp, r=row: self._restore_expansion(e, r))
+
+    def _restore_expansion(self, exp: dict, row: int):
+        """Silinen genişletmeyi eski sırasına geri koyar (bu arada aynı tetikleyici yeniden eklendiyse dokunmaz)."""
+        trigger = exp.get('trigger', '')
+        if any(e.get('trigger') == trigger for e in self.settings_manager.load_settings().get('expansions', [])):
+            _feedback(self, t("restore_conflict", self.lang).format(trigger), "error")
+            return
+        with self.settings_manager.transaction() as settings:
+            items = settings['expansions']
+            row = max(0, min(row, len(items)))
+            items.insert(row, exp)
+        if exp.get('enabled', True) and not is_locked_secret(exp):
+            self.hotkey_manager.add_expansion(exp['trigger'], exp['replacement'], exp.get('is_rich', False))
+        self.load_expansions(keep_row=row)
+        self._reveal_row("exp", row)
+        _feedback(self, t("expansion_restored", self.lang).format(trigger))
     
     def toggle_expansion(self):
         row = self._resolve_expansion_row()
@@ -3801,10 +4082,10 @@ class MainWindow(QMainWindow):
                     exp['trigger'], exp['replacement'],
                     exp.get('is_rich', False)
                 )
-            self.notification_manager.success(t("expansion_enabled", self.lang).format(exp['trigger']))
+            _feedback(self, t("expansion_enabled", self.lang).format(exp['trigger']))
         else:
             self.hotkey_manager.remove_expansion(exp['trigger'])
-            self.notification_manager.info(t("expansion_disabled", self.lang).format(exp['trigger']))
+            _feedback(self, t("expansion_disabled", self.lang).format(exp['trigger']), "info")
 
         self.load_expansions(keep_row=row)
     
@@ -3908,8 +4189,9 @@ class MainWindow(QMainWindow):
             self.color_menu_btn.setIcon(create_accent_swatch_icon(spec["accent"]))
     
     def toggle_theme(self):
-        new_theme = self.theme_manager.toggle_theme()
-        self.settings_manager.set_theme(new_theme)
+        """Ctrl+T: açık <-> koyu (o an görünen temanın tersi; "Sistem" seçiliyse de açıkça seçilmiş olur)."""
+        current = self.theme_manager.get_current_theme()
+        self.apply_theme('light' if current == 'dark' else 'dark')
     
     def on_theme_changed(self, theme, accent=None):
         """Tema/vurgu değiştiğinde: vurguya bağlı menü, sekme ve araç çubuğu simgeleri yeniden boyanır."""
@@ -4048,6 +4330,8 @@ class MainWindow(QMainWindow):
             f"{t('help_sc_settings', self.lang)}<br>"
             f"{t('help_sc_refresh', self.lang)}<br>"
             f"{t('help_sc_toggle', self.lang)}<br>"
+            f"{t('help_sc_find', self.lang)}<br>"
+            f"{t('help_sc_keys', self.lang)}<br>"
             f"{t('help_sc_guide', self.lang)}<br>"
             f"{t('help_sc_exit', self.lang)}</p>"
             f"<p>{self._link_html()}</p>"
@@ -4126,16 +4410,10 @@ class MainWindow(QMainWindow):
             from src.utils.helpers import atomic_write_json
             atomic_write_json(file_path, filtered_settings)
 
-            # Seçilen kategorileri Türkçe'ye çevir
-            selected_categories = [k for k, v in options.items() if v]
-            selected_items_turkish = [self.get_category_name_turkish(cat) for cat in selected_categories]
-            
-            self.notification_manager.success(t("export_success", self.lang))
-            MessageBox.information(
-                self,
-                t("info", self.lang),
-                t("export_done_detail", self.lang).format(', '.join(selected_items_turkish), file_path)
-            )
+            # Başarı: pencere içi kısa bildirim + "Klasörü Aç" (dosyayı Gezgin'de seçili gösterir)
+            _feedback(self, t("export_done_toast", self.lang).format(os.path.basename(file_path)), "success",
+                      t("open_folder", self.lang), lambda path=file_path: _open_containing_folder(path),
+                      duration_ms=7000)
         except Exception as e:
             MessageBox.critical(
                 self,
@@ -4261,6 +4539,9 @@ class MainWindow(QMainWindow):
     
     def close_app(self):
         """Uygulamayı doğrudan kapat (onaysız)"""
+        save_geometry = getattr(self, 'save_window_geometry', None)
+        if save_geometry is not None:
+            save_geometry()
         try:
             self.hotkey_manager.stop()
         except Exception:
@@ -4273,6 +4554,9 @@ class MainWindow(QMainWindow):
         from PyQt6.QtGui import QGuiApplication
         gui_app = QGuiApplication.instance()
         if gui_app is not None and gui_app.isSavingSession():  # Windows kapanıyor/oturum bitiyor: kapanmayı engelleme
+            save_geometry = getattr(self, 'save_window_geometry', None)  # testlerdeki sahte pencerelerde yok
+            if save_geometry is not None:
+                save_geometry()
             self._clear_resize_cursor()
             event.accept()
             return

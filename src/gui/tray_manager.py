@@ -12,6 +12,16 @@ from src.utils.helpers import get_application_path
 from src.utils.theme_manager import accent_hex
 
 
+def restore_window(window) -> None:
+    """Pencereyi simge durumundan / tepsiden önceki hâline döndürür: büyütülmüşse büyütülmüş kalır.
+
+    showNormal() simge durumundaki büyütülmüş pencereyi küçültüyordu; yalnızca "simge durumu" bayrağı kaldırılır."""
+    state = window.windowState()
+    if state & Qt.WindowState.WindowMinimized:
+        window.setWindowState((state & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+    window.show()
+
+
 class TrayManager(QObject):
     """Sistem tepsisi yöneticisi"""
 
@@ -212,10 +222,7 @@ class TrayManager(QObject):
     def show_window(self):
         """Pencereyi göster ve öne getir (simge durumundaysa eski boyutuna döndür)."""
         window = self.main_window
-        if window.isMinimized():
-            window.showNormal()
-        else:
-            window.show()
+        restore_window(window)
         window.raise_()
         window.activateWindow()
         self._sync_show_action()
@@ -281,7 +288,7 @@ class TrayManager(QObject):
             self.main_window.hide()
             self.show_action.setText(t("tray_show", lang))
         else:
-            self.main_window.show()
+            restore_window(self.main_window)
             self.main_window.activateWindow()
             self.show_action.setText(t("tray_hide", lang))
     

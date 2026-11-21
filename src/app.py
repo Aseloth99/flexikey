@@ -792,8 +792,8 @@ class FlexiKeyApp:
 
     def _raise_window(self):
         if hasattr(self, 'main_window') and self.main_window:
-            self.main_window.showNormal()
-            self.main_window.show()
+            from src.gui.tray_manager import restore_window
+            restore_window(self.main_window)  # büyütülmüş pencere büyütülmüş açılır (showNormal küçültüyordu)
             self.main_window.activateWindow()
             self.main_window.raise_()
 
