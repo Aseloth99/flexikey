@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPalette, QPen, QPixmap, QTransform
 from PyQt6.QtWidgets import (
     QApplication,
@@ -31,6 +31,13 @@ CARD_GLYPH_GAP = 5
 GRID_GAP = 8
 DRAG_TILT = 2.5  # sürüklenen kart Trello'daki gibi hafif eğik durur (derece)
 DRAG_SCROLL_EDGE = 40  # imleç listenin üst/alt kenarına bu kadar yaklaşınca liste kendiliğinden kayar
+FLASH_MS = 650  # yeni eklenen kartın kısa süre vurgulu kalması
+LAND_MS = 180  # bırakılan kartın kopyası yerine kayarak iner
+
+
+def _animations_enabled() -> bool:
+    from src.gui.smooth_progress import _system_animations_enabled
+    return _system_animations_enabled()
 
 
 def _elide_metrics(label: QLabel, text: str) -> str:
@@ -221,6 +228,20 @@ class _BaseCard(QFrame):
         used = self.base_width() + kbd_w
         return width - used >= self.state_label.sizeHint().width() + self.layout().spacing()
 
+    def search_text(self) -> str:
+        """Süzgeç yalnızca kartta GÖRÜNEN yazıya bakar: gizli (parola) öğelerin değeri kartta zaten noktalarla
+        durur, bu yüzden aranarak bulunamaz / tahmin edilemez."""
+        return " ".join(p for p in (self._kbd_full, self._primary_full, self._secondary_full) if p).casefold()
+
+    def set_flash(self, on: bool):
+        """Yeni eklenen kartı kısa süre vurgular (QSS: QFrame#list_row[flash="true"])."""
+        if bool(self.property("flash")) == on:
+            return
+        self.setProperty("flash", on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
     def _fit_state_pill(self):
         """Durum hapı yalnızca yer kalırsa görünür (durumu renkli nokta zaten gösterir)."""
         self.state_label.setVisible(self._has_state and self._pill_allowed and self.pill_fits(self.width()))
@@ -367,6 +388,28 @@ class EmptyListPlaceholder(QFrame):
             self.action_button = button
 
 
+class NoResultsPlaceholder(QFrame):
+    """Süzgeçle hiçbir kart eşleşmediğinde: başlık + nasıl temizleneceği."""
+
+    def __init__(self, title: str, hint: str = "", parent=None):
+        super().__init__(parent)
+        self.setObjectName("list_empty")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 28, 24, 20)
+        layout.setSpacing(6)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("empty_title")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setWordWrap(True)
+        layout.addWidget(self.title_label)
+        self.hint_label = QLabel(hint)
+        self.hint_label.setObjectName("hint_label")
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setVisible(bool(hint))
+        layout.addWidget(self.hint_label)
+
+
 class CardListWidget(QScrollArea):
     """Pencere genişliğine göre kartları yan yana dizer (max genişlik sınırlı).
 
@@ -376,6 +419,7 @@ class CardListWidget(QScrollArea):
     activated = pyqtSignal(int)
     selection_changed = pyqtSignal(int)
     reordered = pyqtSignal(int, int)
+    delete_requested = pyqtSignal(int)  # Delete tuşu (seçili kart)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -407,6 +451,13 @@ class CardListWidget(QScrollArea):
         self._selected_index = -1
         self._columns = 1
         self._empty_widget: QWidget | None = None
+        self._filter = ""  # casefold edilmiş süzgeç metni ("" = süzgeç yok)
+        self._no_results_texts = ("", "")
+        self._no_results: NoResultsPlaceholder | None = None
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._end_flash)
+        self._flashing: _BaseCard | None = None
 
         self._press: tuple[_BaseCard, QPoint] | None = None  # sol tuşla basılan kart ve basılan yer (global)
         self._drag: dict | None = None
@@ -473,6 +524,9 @@ class CardListWidget(QScrollArea):
 
     def selected_index(self) -> int:
         if 0 <= self._selected_index < len(self._cards):
+            # Süzgeçle gizlenmiş kart "seçili" sayılmaz: görünmeyen öge düzenlenemez / silinemez.
+            if self._filter and self._filter not in self._cards[self._selected_index].search_text():
+                return -1
             return self._selected_index
         return -1
 
@@ -483,9 +537,156 @@ class CardListWidget(QScrollArea):
     def count(self) -> int:
         return len(self._cards)
 
+    # ------------------------------------------------------------------ süzgeç
+    def _visible_cards(self) -> list[_BaseCard]:
+        if not self._filter:
+            return list(self._cards)
+        return [c for c in self._cards if self._filter in c.search_text()]
+
+    def visible_indices(self) -> list[int]:
+        """Süzgeçten geçen kartların (ayarlardaki) sıra numaraları."""
+        visible = set(map(id, self._visible_cards()))
+        return [i for i, c in enumerate(self._cards) if id(c) in visible]
+
+    def filter_text(self) -> str:
+        return self._filter
+
+    def set_filter(self, text: str, no_results_title: str = "", no_results_hint: str = ""):
+        """Kartları görünen yazılarına göre süzer (büyük/küçük harf duyarsız). Boş metin süzgeci kaldırır.
+
+        Eşleşen yoksa "sonuç yok" yer tutucusu gösterilir; seçili kart elendiyse seçim ilk eşleşene geçer."""
+        self._no_results_texts = (no_results_title, no_results_hint)
+        text = (text or "").strip().casefold()
+        if text == self._filter:
+            self._update_no_results()
+            return
+        self._filter = text
+        if not self._cards:
+            return  # boş liste: "henüz öğe yok" yazısı kalır
+        self._relayout()
+        visible = self.visible_indices()
+        if visible and self._selected_index not in visible:
+            self._select_index(visible[0])
+
+    def _update_no_results(self):
+        """Süzgeç bütün kartları eliyorsa "sonuç yok" yazısı ızgarada durur."""
+        show = bool(self._filter) and bool(self._cards) and not self.visible_indices()
+        if not show:
+            if self._no_results is not None:
+                self._grid.removeWidget(self._no_results)
+                self._no_results.hide()
+                self._no_results.setParent(None)
+                self._no_results.deleteLater()
+                self._no_results = None
+                self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            return
+        title, hint = self._no_results_texts
+        if self._no_results is None:
+            self._no_results = NoResultsPlaceholder(title, hint)
+            self._grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+            self._grid.addWidget(self._no_results, 0, 0, 1, 8)
+        else:
+            self._no_results.title_label.setText(title)
+            self._no_results.hint_label.setText(hint)
+            self._no_results.hint_label.setVisible(bool(hint))
+
+    def is_showing_no_results(self) -> bool:
+        return self._no_results is not None
+
+    # ------------------------------------------------------------------ klavye
+    def keyPressEvent(self, event):  # noqa: N802
+        """Oklar seçimi taşır (ızgarada sağ/sol bir kart, yukarı/aşağı bir satır), Home/End uçlara gider,
+        Enter düzenler (activated), Delete siler (delete_requested). Boşluk ana pencereye kalır (aktif/pasif)."""
+        key = event.key()
+        visible = self.visible_indices()
+        if not visible or event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
+            super().keyPressEvent(event)
+            return
+        current = self._selected_index if self._selected_index in visible else -1
+        pos = visible.index(current) if current >= 0 else -1
+        cols = max(1, self._columns)
+        steps = {
+            Qt.Key.Key_Right: 1, Qt.Key.Key_Left: -1,
+            Qt.Key.Key_Down: cols, Qt.Key.Key_Up: -cols,
+        }
+        if key in steps:
+            if pos < 0:
+                target = 0
+            else:
+                target = pos + steps[key]
+                if not 0 <= target < len(visible):
+                    target = pos  # kenarda: yerinde kal
+            self._keyboard_select(visible[target])
+        elif key == Qt.Key.Key_Home:
+            self._keyboard_select(visible[0])
+        elif key == Qt.Key.Key_End:
+            self._keyboard_select(visible[-1])
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if current >= 0:
+                self.activated.emit(current)
+        elif key == Qt.Key.Key_Delete:
+            if current >= 0:
+                self.delete_requested.emit(current)
+        else:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+
+    def _keyboard_select(self, index: int):
+        if index != self._selected_index:
+            self._select_index(index)
+        self.scroll_to(index)
+
+    def scroll_to(self, index: int):
+        """Kartı görünür alana kaydırır (yerleşim bitmemişse bir olay turu sonra yine)."""
+        if not 0 <= index < len(self._cards):
+            return
+        card = self._cards[index]
+        self._grid.activate()
+        self.ensureWidgetVisible(card, 0, GRID_GAP)
+        QTimer.singleShot(0, lambda c=card: self._ensure_visible_later(c))
+
+    def _ensure_visible_later(self, card: _BaseCard):
+        try:
+            if card in self._cards and card.isVisibleTo(self):
+                self.ensureWidgetVisible(card, 0, GRID_GAP)
+        except RuntimeError:
+            pass
+
+    # ------------------------------------------------------------------ yeni kart vurgusu
+    def flash_row(self, index: int):
+        """Kartı seçer, görünür alana kaydırır ve kısa süre vurgular (yeni eklenen / geri alınan öğe)."""
+        if not 0 <= index < len(self._cards):
+            return
+        self._select_index(index)
+        self.scroll_to(index)
+        self._end_flash()
+        card = self._cards[index]
+        card.set_flash(True)
+        self._flashing = card
+        self._flash_timer.start(FLASH_MS)
+
+    def flashing_card(self):
+        return self._flashing
+
+    def _end_flash(self):
+        card, self._flashing = self._flashing, None
+        self._flash_timer.stop()
+        if card is not None:
+            try:
+                card.set_flash(False)
+            except RuntimeError:
+                pass
+
     def clear_cards(self):
         self._drag_finish(cancel=True, notify=False)  # liste yenilenirken sürükleme yarıda kalmasın
         self._press = None
+        self._end_flash()
+        if self._no_results is not None:
+            self._no_results.hide()
+            self._no_results.setParent(None)
+            self._no_results.deleteLater()
+            self._no_results = None
         self._cards.clear()
         self._selected_index = -1
         self._empty_widget = None
@@ -519,7 +720,8 @@ class CardListWidget(QScrollArea):
         for i in reversed(range(self._grid.count())):
             item = self._grid.takeAt(i)
             widget = item.widget()
-            if widget is not None and widget not in self._cards and not (self._drag and widget is self._drag["slot"]):
+            if widget is not None and widget not in self._cards and not (self._drag and widget is self._drag["slot"]) \
+                    and widget is not self._no_results:
                 widget.hide()
                 widget.setParent(None)
         cols = max(1, self._columns)
@@ -530,9 +732,16 @@ class CardListWidget(QScrollArea):
         if self._drag:
             self._drag_layout()
             return
-        for i, card in enumerate(self._cards):
+        visible = self._visible_cards()
+        shown = set(map(id, visible))
+        for card in self._cards:
+            if id(card) not in shown:
+                card.hide()  # süzgeçte elendi: ızgaradan çıktı, gizli bekler
+        for i, card in enumerate(visible):
             row, col = divmod(i, cols)
             self._grid.addWidget(card, row, col)
+            card.show()
+        self._update_no_results()
 
     def add_card(self, card: _BaseCard) -> int:
         index = len(self._cards)
@@ -555,8 +764,14 @@ class CardListWidget(QScrollArea):
             self._grid.setColumnStretch(c, 0)
         for card in cards:
             self.add_card(card)
+        if self._filter and cards:
+            self._relayout()  # süzgeç açıkken yenilenen liste de süzülmüş gelsin
         if cards:
-            self._select_index(min(max(select_row, 0), len(cards) - 1))
+            row = min(max(select_row, 0), len(cards) - 1)
+            visible = self.visible_indices()
+            if visible and row not in visible:
+                row = visible[0]
+            self._select_index(row)
         else:
             self._selected_index = -1
 
@@ -596,7 +811,9 @@ class CardListWidget(QScrollArea):
             elif et == QEvent.Type.MouseMove and self._press and event.buttons() & Qt.MouseButton.LeftButton:
                 pos = event.globalPosition().toPoint()
                 card, start = self._press
-                if (pos - start).manhattanLength() >= QApplication.startDragDistance() and len(self._cards) > 1:
+                # süzgeç açıkken sıralama kapalı: görünen sıra ayarlardaki sıranın tamamı değildir
+                if (pos - start).manhattanLength() >= QApplication.startDragDistance() and len(self._cards) > 1 \
+                        and not self._filter:
                     self._press = None
                     self._drag_begin(card, start, pos)
                     return True
@@ -713,8 +930,8 @@ class CardListWidget(QScrollArea):
         floating.removeEventFilter(self)
         floating.releaseMouse()
         floating.releaseKeyboard()
+        land_from = floating.pos() if (notify and not cancel and floating.isVisible()) else None
         floating.hide()
-        floating.deleteLater()
         slot = drag["slot"]
         self._grid.removeWidget(slot)
         slot.hide()
@@ -722,6 +939,7 @@ class CardListWidget(QScrollArea):
         slot.deleteLater()
         card = drag["card"]
         if not notify:
+            floating.deleteLater()
             return  # liste zaten yeniden kuruluyor
         card.show()
         src, dst = drag["from"], (drag["from"] if cancel else drag["to"])
@@ -731,5 +949,29 @@ class CardListWidget(QScrollArea):
                 c.item_index = i
         self._relayout()
         self._select_index(dst)
+        self._land(floating, land_from, card)
         if dst != src:
             self.reordered.emit(src, dst)
+
+    def _land(self, floating: QLabel, start: QPoint | None, card: _BaseCard):
+        """Bırakılan kartın süzülen kopyası kartın yeni yerine kısa (LAND_MS) bir kaymayla iner, sonra silinir.
+        Animasyonlar kapalıysa / pencere görünmüyorsa hemen silinir."""
+        parent = floating.parentWidget()
+        if start is None or parent is None or not parent.isVisible() or not _animations_enabled():
+            floating.deleteLater()
+            return
+        self._grid.activate()
+        size = floating.size()
+        pad = QPoint((size.width() - card.width()) // 2, (size.height() - card.height()) // 2)
+        target = card.mapTo(parent, QPoint(0, 0)) - pad
+        floating.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        floating.move(start)
+        floating.show()
+        floating.raise_()
+        anim = QPropertyAnimation(floating, b"pos", floating)
+        anim.setDuration(LAND_MS)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.finished.connect(floating.deleteLater)
+        anim.start()

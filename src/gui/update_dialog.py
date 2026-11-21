@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from src.gui.chrome_dialog import ChromeDialog
 from src.utils.helpers import format_bytes, format_speed
 from src.utils.locales import get_active_language, t
+from src.gui.smooth_progress import SmoothProgressBar
 
 
 def _set_notes(box, notes: str, default: str) -> None:
@@ -115,7 +116,7 @@ class UpdateDialog(ChromeDialog):
         layout.addWidget(self.notes_text, 1)
 
         # Progress bar (initially hidden)
-        self.progress_bar = QProgressBar()
+        self.progress_bar = SmoothProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setMinimumHeight(18)
