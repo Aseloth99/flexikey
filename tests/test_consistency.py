@@ -619,21 +619,76 @@ class CardMenuTests(_Base):
             self.assertNotIn("merhaba", toast)
             self.assertNotIn("Ankara", toast)
 
-    def test_secret_value_never_reaches_the_clipboard_or_the_screen(self):
+    def test_secret_copy_stays_out_of_clipboard_history_and_is_cleared(self):
+        from src.core.clipboard_utils import PRIVACY_FORMAT_NAMES
+
+        self.addCleanup(self.window.clear_secret_clipboard)
         clipboard = QApplication.clipboard()
-        clipboard.setText("önceki pano")
-        for prefix in ("hotkey", "exp"):
+        for prefix, value, name in (("hotkey", SECRET_VALUE + "h", "Ctrl + Alt + 9"), ("exp", SECRET_VALUE, ";pw")):
+            clipboard.setText("önceki pano")
+            self.toasts.clear()
             menu = self._menu(prefix, 2)
             copy_action = self._action(menu, "Kopyala")
-            self.assertFalse(copy_action.isEnabled(), prefix)
-            self.assertEqual(copy_action.toolTip(), "Gizli değerler panoya kopyalanmaz.")
+            self.assertTrue(copy_action.isEnabled(), prefix)
+            self.assertEqual(copy_action.toolTip(), "Pano geçmişine ve buluta girmez; 30 sn sonra panodan silinir.")
+            self.assertIn(str(mw.SECRET_CLIPBOARD_MS // 1000), copy_action.toolTip(), "ipucu ile süre aynı")
             self.assertTrue(menu.toolTipsVisible())
-            copy_action.trigger()                          # pasif eylem tetiklenmez; yöntem de reddeder
-            self.assertFalse(self.window.copy_item(prefix, 2))
             for action in menu.actions():
                 self.assertNotIn(SECRET_VALUE, action.text() + action.toolTip() + action.statusTip())
-            self.assertEqual([a.isEnabled() for a in menu.actions() if not a.isSeparator()],
-                             [True, True, False, True], "gizli öğe de düzenlenir / silinir")
+            copy_action.trigger()
+            mime = clipboard.mimeData()
+            self.assertEqual(clipboard.text(), value, prefix)
+            self.assertFalse(mime.hasHtml(), "gizli değer düz metin gider")
+            for fmt in PRIVACY_FORMAT_NAMES:   # Win+V geçmişi, bulut panosu, pano izleyiciler: "hayır"
+                self.assertEqual(bytes(mime.data(f'application/x-qt-windows-mime;value="{fmt}"')), b"\x00" * 4,
+                                 (prefix, fmt))
+            self.assertEqual(len(self.toasts), 1)
+            self.assertIn(name, self.toasts[0])
+            self.assertIn("pano geçmişine girmez", self.toasts[0])
+            self.assertNotIn(SECRET_VALUE, self.toasts[0], "bildirimde değer yok")
+            timer = self.window._secret_clip_timer
+            self.assertTrue(timer.isActive() and timer.isSingleShot())
+            self.assertEqual(timer.interval(), mw.SECRET_CLIPBOARD_MS)
+            timer.timeout.emit()                                  # süre doldu
+            self.assertEqual(clipboard.text(), "", prefix)
+            self.assertFalse(timer.isActive())
+
+    def test_a_later_copy_is_not_wiped_by_the_pending_secret_clear(self):
+        clipboard = QApplication.clipboard()
+        self._action(self._menu("exp", 2), "Kopyala").trigger()
+        self._action(self._menu("exp", 0), "Kopyala").trigger()   # gizli olmayan, sonra kopyalandı
+        self.assertFalse(self.window.clear_secret_clipboard())
+        self.assertEqual(clipboard.text(), "Atatürk Cad. No 5\nAnkara")
+        self._action(self._menu("exp", 2), "Kopyala").trigger()
+        clipboard.setText("başka programın kopyası")              # arada başka bir şey kopyalandı: dokunulmaz
+        self.assertFalse(self.window.clear_secret_clipboard())
+        self.assertEqual(clipboard.text(), "başka programın kopyası")
+        self.assertFalse(self.window.clear_secret_clipboard(), "bekleyen silme bir kez denenir")
+
+    def test_quitting_before_the_timer_clears_the_secret(self):
+        clipboard = QApplication.clipboard()
+        self._action(self._menu("hotkey", 2), "Kopyala").trigger()
+        self.assertEqual(clipboard.text(), SECRET_VALUE + "h")
+        self.qapp.aboutToQuit.emit()
+        self.assertEqual(clipboard.text(), "")
+        self.assertFalse(self.window._secret_clip_timer.isActive())
+
+    def test_a_locked_secret_has_nothing_to_copy(self):
+        data = self.settings.load_settings()
+        data.update(expansions=[{"trigger": ";kilit", "replacement": "", "enabled": True, "is_secret": True,
+                                 "secret_blob": "dpapi1:xx"}])
+        self.settings.save_settings(data)
+        self.window.load_expansions(keep_row=0)
+        self.qapp.processEvents()
+        clipboard = QApplication.clipboard()
+        clipboard.setText("önceki pano")
+        menu = self._menu("exp", 0)
+        copy_action = self._action(menu, "Kopyala")
+        self.assertFalse(copy_action.isEnabled())
+        self.assertEqual(copy_action.toolTip(), "Bu gizli değer bu bilgisayarda açılamıyor; kopyalanamaz.")
+        self.assertEqual([a.isEnabled() for a in menu.actions() if not a.isSeparator()],
+                         [True, True, False, True], "kilitli gizli öğe de düzenlenir / silinir")
+        self.assertFalse(self.window.copy_item("exp", 0))
         self.assertEqual(clipboard.text(), "önceki pano")
         self.assertEqual(self.toasts, [])
 
@@ -882,6 +937,121 @@ class CheckboxSpecTests(unittest.TestCase):
         self.assertEqual((img.width(), img.height()), (64, 64))
         self.assertEqual(img.pixelColor(24, 44).name(), "#ffffff")   # (6, 11) köşesi x4
         self.assertEqual(img.pixelColor(2, 2).alpha(), 0)
+
+
+def _strict_rule(qss: str, selector: str) -> str:
+    """Seçici kuralın başında durmalı (ör. "QPushButton" araması "QFrame#x QPushButton"a takılmasın)."""
+    match = re.search(r"(?:^|\}|\*/)\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", qss)
+    assert match, selector
+    return " ".join(match.group(1).split())
+
+
+class SharedLookTests(_Base):
+    """Dört uygulamada aynı görünüm (23 Kasım 2026): düğme köşeleri (normal/vurgulu 10 px, küçük/araç 6 px), 36 px
+    açılır liste ve aynı satırdaki kısayol alanı, aynı chevron oku (soluk yazı renginde), MediaCompressor ölçüsünde
+    nötr kaydırma çubuğu (vurgu yalnızca üzerine gelince/basılıyken), ortak yazı boyları."""
+
+    def _sheets(self):
+        from src.utils.theme_manager import _build_palette, _build_qss
+
+        for dark in (True, False):
+            p = _build_palette(dark, "cyan")
+            yield dark, p, _build_qss(p)
+
+    def test_button_corners_normal_and_primary_10_small_6(self):
+        for _dark, _p, qss in self._sheets():
+            self.assertIn("border-radius: 10px;", _strict_rule(qss, "QPushButton"))
+            self.assertIn("border-radius: 10px;", _strict_rule(qss, 'QPushButton[class="secondary"]'))
+            for small in ("QPushButton#window_control_btn", "QPushButton#window_close_btn",
+                          "QPushButton#title_menu_btn", "QPushButton#toast_action"):
+                self.assertIn("border-radius: 6px;", _strict_rule(qss, small), small)
+            # bilerek farklı: yuvarlak simge düğmesi; bölümlü grupta iç düğme 9 px, dış çerçeve 12 px (3 px içeride, eş merkezli)
+            self.assertIn("border-radius: 18px;", _strict_rule(qss, 'QPushButton[class="icon"]'))
+            self.assertIn("border-radius: 9px;", _strict_rule(qss, 'QPushButton[class="seg"]'))
+
+    def test_combo_and_the_shortcut_field_beside_it_are_36_px(self):
+        from PyQt6.QtWidgets import QComboBox
+
+        self.addCleanup(self.qapp.setStyleSheet, self.qapp.styleSheet())
+        theme = ThemeManager(self.qapp)
+        for name in ("dark", "light"):
+            theme.set_theme(name, "cyan")
+            dialog = mw.HotkeyDialog(None)
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            self.qapp.processEvents()
+            combos = [c for c in dialog.findChildren(QComboBox) if c.isVisible()]
+            keys = [w for w in dialog.findChildren(QWidget) if type(w).__name__ == "EnhancedKeySequenceEdit"]
+            self.assertTrue(combos and keys)
+            self.assertEqual({c.height() for c in combos}, {36}, name)
+            self.assertEqual({k.height() for k in keys}, {36}, name)
+            dialog.close()
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(startup, "is_enabled", return_value=False):
+            sm = SettingsManager(settings_path=str(pathlib.Path(raw) / "config.json"))
+            parent = QWidget()
+            self.addCleanup(parent.deleteLater)
+            dialog = mw.SettingsDialog(parent, sm, theme, mock.Mock(), None)
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            self.qapp.processEvents()
+            self.assertEqual((dialog.theme_combo.height(), dialog.lang_combo.height()), (36, 36))
+            dialog.close()
+
+    def test_combo_arrow_is_the_shared_chevron(self):
+        from PyQt6.QtGui import QColor, QImage
+        from src.utils.theme_manager import get_chevron_down_icon_path
+
+        for _dark, p, qss in self._sheets():
+            drop = _strict_rule(qss, "QComboBox::drop-down")
+            for decl in ("subcontrol-origin: padding;", "subcontrol-position: center right;", "width: 28px;",
+                         "border: none;", "background: transparent;"):
+                self.assertIn(decl, drop)
+            self.assertNotIn("margin", drop)
+            arrow = _strict_rule(qss, "QComboBox::down-arrow")
+            self.assertIn(f"fk_chev_{p['text_muted'].lstrip('#').lower()}_x4.png", arrow)
+            self.assertIn("width: 12px;", arrow)
+            self.assertIn("height: 12px;", arrow)
+            self.assertNotRegex(qss, r"QComboBox::(down-arrow|drop-down):(hover|on|disabled|pressed)")
+            img = QImage(get_chevron_down_icon_path(p["text_muted"]))
+            s = 4
+            self.assertEqual((img.width(), img.height()), (12 * s, 12 * s))
+            self.assertEqual(img.pixelColor(6 * s, 8 * s - 1).name(), QColor(p["text_muted"]).name(), "uç")
+            self.assertGreater(img.pixelColor(round(4.25 * s), round(6.25 * s)).alpha(), 200, "sol kol")
+            self.assertEqual(img.pixelColor(6 * s, round(5.5 * s)).alpha(), 0, "içi boş")
+            self.assertEqual(img.pixelColor(2, 2).alpha(), 0)
+
+    def test_scrollbar_is_neutral_and_accent_only_on_hover(self):
+        for dark, p, qss in self._sheets():
+            track, handle = ("#1f1f1f", "#575757") if dark else ("#d8d8d8", "#a3a3a3")
+            for axis, size, minimum in (("vertical", "width", "min-height"), ("horizontal", "height", "min-width")):
+                bar = _strict_rule(qss, f"QScrollBar:{axis}")
+                for decl in (f"background-color: {track};", f"{size}: 10px;", "margin: 2px;", "border-radius: 5px;"):
+                    self.assertIn(decl, bar, axis)
+                grip = _strict_rule(qss, f"QScrollBar::handle:{axis}")
+                for decl in (f"background: {handle};", "border-radius: 5px;", f"{minimum}: 28px;"):
+                    self.assertIn(decl, grip, axis)
+                self.assertNotIn(p["accent"], grip, "tutamaç vurgu renginde değil")
+                hover = _strict_rule(qss, f"QScrollBar::handle:{axis}:hover, QScrollBar::handle:{axis}:pressed")
+                self.assertIn(f"background: {p['accent']};", hover)
+
+    def test_font_roles(self):
+        for _dark, _p, qss in self._sheets():
+            self.assertRegex(qss, r"\*\s*\{[^}]*font-size: 10pt;", "gövde")
+            title = _strict_rule(qss, "QLabel#title_label")
+            self.assertIn("font-size: 9.5pt;", title)
+            self.assertIn("font-weight: 600;", title)
+            header = _strict_rule(qss, "QLabel#section_header")
+            self.assertIn("font-size: 12pt;", header)
+            self.assertIn("font-weight: 700;", header)
+            self.assertIn("font-size: 9pt;", _strict_rule(qss, "QLabel#hint_label"))
+            button = _strict_rule(qss, "QPushButton")
+            self.assertIn("font-size: 10pt;", button)
+            self.assertIn("font-weight: 600;", button)
+            menu = _strict_rule(qss, "QPushButton#title_menu_btn")
+            self.assertIn("font-size: 9pt;", menu)
+            self.assertIn("font-weight: 600;", menu)
+            for field in ("QComboBox", "QCheckBox"):
+                self.assertIn("font-size: 10pt;", _strict_rule(qss, field), field)
 
 
 # ---------------------------------------------------------------------------------------------------------------

@@ -208,6 +208,41 @@ class SnapshotRestoreTests(unittest.TestCase):
         plain = FakeClipboard({CF_UNICODETEXT: "x", 1: b"x", 16: b"\x00"})   # CF_TEXT/LOCALE sentezlenir
         self.assertFalse(cu.snapshot_clipboard(plain, CON).lossy)
 
+    def assert_marked_private(self, cb):
+        for name in cu.PRIVACY_FORMAT_NAMES:
+            self.assertEqual(cb.formats.get(cb.RegisterClipboardFormat(name)), b"\x00\x00\x00\x00", name)
+
+    def test_rich_paste_content_stays_out_of_clipboard_history(self):
+        # genisletilen metin (parola olabilir) Win+V gecmisine ve bulut panosuna girmemeli
+        cb = FakeClipboard({CF_UNICODETEXT: "eski"})
+        cu.set_clipboard_rich_text(cb, CON, "<b>gizli</b>", "gizli")
+        self.assertEqual(cb.formats[CF_UNICODETEXT], "gizli")
+        self.assert_marked_private(cb)
+
+    def test_privacy_marks_survive_snapshot_and_restore(self):
+        # parola yoneticisinden kopyalanan deger geri yuklenince gecmise dusmemeli
+        cb = FakeClipboard({CF_UNICODETEXT: "parola"})
+        cb.OpenClipboard(); cu.mark_private(cb); cb.CloseClipboard()
+        snap = cu.snapshot_clipboard(cb, CON)
+        self.assertFalse(snap.lossy)
+        cu.set_clipboard_rich_text(cb, CON, "<b>x</b>", "x")
+        self.assertTrue(cu.restore_clipboard(cb, snap, cb.sequence))
+        self.assertEqual(cb.formats[CF_UNICODETEXT], "parola")
+        self.assert_marked_private(cb)
+
+    def test_plain_copy_is_not_marked_after_restore(self):
+        cb = FakeClipboard({CF_UNICODETEXT: "normal"})
+        snap = cu.snapshot_clipboard(cb, CON)
+        cu.set_clipboard_rich_text(cb, CON, "<b>x</b>", "x")
+        cu.restore_clipboard(cb, snap, cb.sequence)
+        self.assertEqual(cb.formats, {CF_UNICODETEXT: "normal"})
+
+    def test_private_mime_data_carries_the_windows_privacy_formats(self):
+        mime = cu.private_mime_data("deger")
+        self.assertEqual(mime.text(), "deger")
+        for name in cu.PRIVACY_FORMAT_NAMES:
+            self.assertEqual(bytes(mime.data(f'application/x-qt-windows-mime;value="{name}"')), b"\x00\x00\x00\x00")
+
     def test_restore_failure_is_swallowed_and_logged(self):
         cb = FakeClipboard({CF_UNICODETEXT: "eski"})
         snap = cu.snapshot_clipboard(cb, CON)

@@ -566,21 +566,24 @@ def create_exit_icon(color_hex: str = "#ef4444") -> QIcon:
 
 
 def get_chevron_down_icon_path(color_hex: str = "#757575") -> str:
-    """QComboBox için aşağı ok / chevron görseli üretir ve dosya yolunu döner."""
-    clean = color_hex.lstrip('#')
-    path = os.path.join(tempfile.gettempdir(), f"fk_chev_{clean}.png")
-    pix = QPixmap(16, 16)
-    pix.fill(Qt.GlobalColor.transparent)
-    pt = QPainter(pix)
+    """QComboBox aşağı oku (chevron) görselini üretir ve yolunu döner.
+
+    Lumina, MediaCompressor ve TransferTCP aynı çizimi kullanır: 12x12 kutuda (2.5,4.5)-(6,8)-(9.5,4.5), 1.5 px
+    yuvarlak uçlu kalem, 4x PNG, soluk yazı renginde (`text_muted`); üzerine gelince, açıkken ve pasifken değişmez.
+    QImage ile çizilir (QGuiApplication gerekmez)."""
+    s = _CHECKMARK_SCALE
+    path = os.path.join(tempfile.gettempdir(), f"fk_chev_{color_hex.lstrip('#').lower()}_x{s}.png")
+    img = QImage(12 * s, 12 * s, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    pt = QPainter(img)
     pt.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(color_hex), 2.0)
+    pen = QPen(QColor(color_hex), 1.5 * s)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     pt.setPen(pen)
-    pt.drawLine(QPointF(3.5, 6), QPointF(8, 10.5))
-    pt.drawLine(QPointF(8, 10.5), QPointF(12.5, 6))
+    pt.drawPolyline(QPolygonF([QPointF(2.5 * s, 4.5 * s), QPointF(6 * s, 8 * s), QPointF(9.5 * s, 4.5 * s)]))
     pt.end()
-    pix.save(path)
+    img.save(path)
     return path.replace('\\', '/')
 
 # ─────────────────────────────────────────────
@@ -770,13 +773,15 @@ def _build_qss(p: dict) -> str:
     """Temiz, modern ve rounded bileşenler için tam QSS"""
     chk_path = get_checkmark_icon_path("#ffffff")
     chk_muted_path = get_checkmark_icon_path(p["text_muted"])
-    chev_path = get_chevron_down_icon_path(p["text_secondary"])
+    chev_path = get_chevron_down_icon_path(p["text_muted"])
     nav_tint, nav_ink = _nav_colors(p)
+    # kaydırma çubuğu: dört uygulamada aynı (MediaCompressor ölçüsü) — nötr tutamaç, üzerine gelince/basılıyken vurgu
+    sb_track, sb_handle = ("#1f1f1f", "#575757") if p.get("is_dark") else ("#d8d8d8", "#a3a3a3")
     return f"""
         /* ── Temel Ayarlar ── */
         * {{
             font-family: 'Segoe UI', 'Segoe UI Variable Text', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
-            font-size: 9.5pt;
+            font-size: 10pt;
         }}
 
         QWidget {{
@@ -814,8 +819,8 @@ def _build_qss(p: dict) -> str:
 
         QLabel#title_label {{
             color: {p['text']};
-            font-size: 10.5pt;
-            font-weight: 700;
+            font-size: 9.5pt;
+            font-weight: 600;
             background: transparent;
             padding-left: 4px;
         }}
@@ -833,7 +838,7 @@ def _build_qss(p: dict) -> str:
         QPushButton#window_control_btn {{
             background-color: transparent;
             border: none;
-            border-radius: 7px;
+            border-radius: 6px;
             font-size: 12pt;
             font-weight: 400;
             color: {p['text_muted']};
@@ -855,7 +860,7 @@ def _build_qss(p: dict) -> str:
         QPushButton#window_close_btn {{
             background-color: transparent;
             border: none;
-            border-radius: 7px;
+            border-radius: 6px;
             font-size: 14pt;
             font-weight: 400;
             color: {p['text_muted']};
@@ -885,7 +890,7 @@ def _build_qss(p: dict) -> str:
         QPushButton#title_menu_btn {{
             background-color: transparent;
             border: 1px solid transparent;
-            border-radius: 7px;
+            border-radius: 6px;
             padding: 4px 22px 4px 6px;
             font-size: 9pt;
             font-weight: 600;
@@ -914,7 +919,7 @@ def _build_qss(p: dict) -> str:
             border-radius: 10px;
             padding: 0px 12px;
             font-weight: 600;
-            font-size: 9pt;
+            font-size: 10pt;
             outline: none;
             min-height: 32px;
             max-height: 32px;
@@ -979,7 +984,7 @@ def _build_qss(p: dict) -> str:
         QPushButton[class="secondary"] {{
             background-color: {p['surface']};
             border: 1px solid {p['border_strong']};
-            border-radius: 8px;
+            border-radius: 10px;
             color: {p['text']};
             padding: 0px 12px;
             font-weight: 600;
@@ -1002,7 +1007,7 @@ def _build_qss(p: dict) -> str:
             border: 1px solid {p['border']};
             border-radius: 9px;
             padding: 8px 12px;
-            font-size: 9.5pt;
+            font-size: 10pt;
             selection-background-color: {p['accent']};
             selection-color: {p['selected_text']};
         }}
@@ -1021,7 +1026,7 @@ def _build_qss(p: dict) -> str:
             border: 1px solid {p['border']};
             border-radius: 9px;
             padding: 8px 12px;
-            font-size: 9.5pt;
+            font-size: 10pt;
             selection-background-color: {p['accent']};
             selection-color: {p['selected_text']};
         }}
@@ -1039,9 +1044,9 @@ def _build_qss(p: dict) -> str:
             color: {p['text']};
             border: 2px solid {p['border_strong']};
             border-radius: 10px;
-            padding: 6px 34px 6px 12px;
-            font-size: 9.5pt;
-            min-height: 36px;
+            padding: 0px 28px 0px 12px;
+            font-size: 10pt;
+            min-height: 32px;     /* + 2x2 px kenar = 36 px: dört uygulamada açılır liste yüksekliği */
             combobox-popup: 0;
         }}
         QComboBox:hover {{
@@ -1064,7 +1069,6 @@ def _build_qss(p: dict) -> str:
             width: 28px;
             border: none;
             background: transparent;
-            margin-right: 4px;
         }}
         QComboBox::down-arrow {{
             image: url("{chev_path}");
@@ -1410,7 +1414,7 @@ def _build_qss(p: dict) -> str:
             background-color: transparent;
             color: {p['accent_text']};
             border: none;
-            border-radius: 7px;
+            border-radius: 6px;
             padding: 0px 10px;
             min-height: 24px;
             max-height: 24px;
@@ -1461,7 +1465,7 @@ def _build_qss(p: dict) -> str:
             spacing: 10px;
             color: {p['text']};
             background: transparent;
-            font-size: 9.5pt;
+            font-size: 10pt;
         }}
         QCheckBox:disabled {{
             color: {p['text_muted']};
@@ -1498,31 +1502,31 @@ def _build_qss(p: dict) -> str:
 
         /* ── ScrollBar ── */
         QScrollBar:vertical {{
-            background-color: transparent;
-            width: 8px;
+            background-color: {sb_track};
+            width: 10px;
             margin: 2px;
-            border-radius: 4px;
+            border-radius: 5px;
         }}
         QScrollBar::handle:vertical {{
-            background: {p['accent']};
-            border-radius: 4px;
-            min-height: 30px;
+            background: {sb_handle};
+            border-radius: 5px;
+            min-height: 28px;
         }}
-        QScrollBar::handle:vertical:hover {{
+        QScrollBar::handle:vertical:hover, QScrollBar::handle:vertical:pressed {{
             background: {p['accent']};
         }}
         QScrollBar:horizontal {{
-            background-color: transparent;
-            height: 8px;
+            background-color: {sb_track};
+            height: 10px;
             margin: 2px;
-            border-radius: 4px;
+            border-radius: 5px;
         }}
         QScrollBar::handle:horizontal {{
-            background: {p['accent']};
-            border-radius: 4px;
-            min-width: 30px;
+            background: {sb_handle};
+            border-radius: 5px;
+            min-width: 28px;
         }}
-        QScrollBar::handle:horizontal:hover {{
+        QScrollBar::handle:horizontal:hover, QScrollBar::handle:horizontal:pressed {{
             background: {p['accent']};
         }}
         QScrollBar::add-line, QScrollBar::sub-line,
@@ -1610,13 +1614,13 @@ def _build_qss(p: dict) -> str:
         }}
         QLabel#hint_label {{
             color: {p['text_muted']};
-            font-size: 8.5pt;
+            font-size: 9pt;
             padding-top: 2px;
             line-height: 1.35;
         }}
         QLabel#section_header {{
             color: {p['text']};
-            font-size: 11pt;
+            font-size: 12pt;
             font-weight: 700;
         }}
         QLabel#dialog_header {{
@@ -1626,7 +1630,7 @@ def _build_qss(p: dict) -> str:
         }}
         QLabel#update_status {{
             color: {p['text_muted']};
-            font-size: 8.5pt;
+            font-size: 9pt;
         }}
         QLabel#update_error {{
             color: {p['danger_text']};

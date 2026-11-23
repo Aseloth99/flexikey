@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QEvent, QMimeData
 from PyQt6.QtGui import QIcon, QKeySequence, QAction, QKeyEvent, QActionGroup, QCursor, QShortcut, QFont, QFontMetrics
 import sys
 import time
+import uuid
 from src.utils.locales import AUTO_LANGUAGE, get_active_language, install_qt_translations, language_choices, t
 from src.utils.theme_manager import (
     ACCENTS, DEFAULT_ACCENT, ORDERED_ACCENT_KEYS, accent_hex,
@@ -39,11 +40,16 @@ from src.utils.settings_manager import (
     DEFAULT_SETTINGS, exportable_records, is_locked_secret, is_secret_record, register_saved_items, secret_count,
 )
 from src.utils import startup
+from src.core.clipboard_utils import private_mime_data
 
 try:
     import winreg
 except ImportError:
     winreg = None
+
+# Kartın menüsünden kopyalanan gizli değer bu süre sonra panodan silinir (parola yöneticilerindeki gibi).
+SECRET_CLIPBOARD_MS = 30_000
+SECRET_MARKER_FORMAT = "application/x-flexikey-secret-copy"  # rastgele kimlik; değerin kendisi değil
 
 
 def _feedback(window, text: str, kind: str = "success", action_text: str = "", action=None,
@@ -4168,8 +4174,9 @@ class MainWindow(QMainWindow):
     def card_menu(self, prefix: str, row: int) -> QMenu | None:
         """Kartın menüsü: Düzenle · Pasif Yap / Aktif Yap · Kopyala · — · Sil.
 
-        Eylemler araç çubuğu, çift tık ve Delete tuşuyla aynı yöntemlere gider (silme onayı dahil). Gizli öğenin
-        değeri panoya çıkmaz (gizli metin hep klavyeden yazılır, pano geçmişine düşmez): Kopyala pasif kalır."""
+        Eylemler araç çubuğu, çift tık ve Delete tuşuyla aynı yöntemlere gider (silme onayı dahil). Gizli öğe de
+        kopyalanır ama pano geçmişine / buluta girmez ve SECRET_CLIPBOARD_MS sonra panodan silinir (copy_item);
+        bu bilgisayarda açılamayan (kilitli) gizli öğede kopyalanacak değer yoktur: Kopyala pasif kalır."""
         record = self._card_record(prefix, row)
         if record is None:
             return None
@@ -4185,10 +4192,12 @@ class MainWindow(QMainWindow):
         state_key = "card_disable" if record.get('enabled', True) else "card_enable"
         menu.addAction(menu_icon("bolt"), t(state_key, self.lang)).triggered.connect(lambda *_: toggle(row))
         copy_action = menu.addAction(menu_icon("copy"), t("card_copy", self.lang))
-        if is_secret_record(record):
+        if is_locked_secret(record):
             copy_action.setEnabled(False)
-            copy_action.setToolTip(t("card_copy_secret_tip", self.lang))
+            copy_action.setToolTip(t("card_copy_locked_tip", self.lang))
         else:
+            if is_secret_record(record):
+                copy_action.setToolTip(t("card_copy_secret_tip", self.lang))
             copy_action.triggered.connect(lambda *_: self.copy_item(prefix, row))
         menu.addSeparator()
         menu.addAction(menu_icon("trash"), strip_symbols(t("btn_delete", self.lang))).triggered.connect(
@@ -4210,10 +4219,25 @@ class MainWindow(QMainWindow):
 
     def copy_item(self, prefix: str, row: int) -> bool:
         """Kartın içeriğini (kartta kısaltılmış görünenin tamamı) panoya kopyalar; biçimli metin biçimiyle gider.
-        Gizli öğe kopyalanmaz. Bildirimde yalnızca kısayol / tetikleyici adı olur, içerik olmaz."""
+        Bildirimde yalnızca kısayol / tetikleyici adı olur, içerik olmaz.
+
+        Gizli öğe düz metin olarak, gizlilik işaretleriyle gider (Win+V geçmişi, bulut panosu ve pano izleyen
+        programlar almaz) ve SECRET_CLIPBOARD_MS sonra, pano hâlâ onu tutuyorsa silinir; uygulama kapanırken de.
+        Kilitli (bu bilgisayarda açılamayan) gizli öğenin değeri yoktur: kopyalanmaz."""
         record = self._card_record(prefix, row)
-        if record is None or is_secret_record(record):
+        if record is None or is_locked_secret(record):
             return False
+        if is_secret_record(record):
+            name = (format_shortcut_for_display(record.get('shortcut', '')) if prefix == "hotkey"
+                    else record.get('trigger', ''))
+            value = record.get('action_value' if prefix == "hotkey" else 'replacement', '') or ''
+            token = uuid.uuid4().hex.encode("ascii")
+            mime = private_mime_data(value)
+            mime.setData(SECRET_MARKER_FORMAT, token)  # silerken "pano hâlâ bu kopyayı mı tutuyor" diye bakılır
+            QApplication.clipboard().setMimeData(mime)
+            self._arm_secret_clipboard_clear(token)
+            _feedback(self, t("secret_copied", self.lang).format(name, SECRET_CLIPBOARD_MS // 1000))
+            return True
         if prefix == "hotkey":
             value = record.get('action_value', '') or ''
             if record.get('action_type') == 'command':
@@ -4232,6 +4256,37 @@ class MainWindow(QMainWindow):
             mime.setText(value)
         QApplication.clipboard().setMimeData(mime)
         _feedback(self, message)
+        return True
+
+    def _arm_secret_clipboard_clear(self, token: bytes) -> None:
+        """Gizli kopyayı SECRET_CLIPBOARD_MS sonra panodan kaldırır (yeni bir gizli kopya süreyi baştan başlatır)."""
+        timer = getattr(self, "_secret_clip_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.clear_secret_clipboard)
+            self._secret_clip_timer = timer
+            app = QApplication.instance()
+            if app is not None:  # süre dolmadan çıkılırsa gizli değer panoda kalmasın
+                app.aboutToQuit.connect(self.clear_secret_clipboard)
+        self._secret_clip_token = token
+        timer.start(SECRET_CLIPBOARD_MS)
+
+    def clear_secret_clipboard(self) -> bool:
+        """Bekleyen gizli kopyayı panodan siler; pano artık o kopyayı tutmuyorsa (arada FlexiKey'den ya da başka bir
+        programdan bir şey kopyalandı) dokunmaz. Silindiyse True."""
+        pending = getattr(self, "_secret_clip_token", None)
+        if pending is None:
+            return False
+        self._secret_clip_token = None
+        timer = getattr(self, "_secret_clip_timer", None)
+        if timer is not None:
+            timer.stop()
+        clipboard = QApplication.clipboard()
+        current = clipboard.mimeData()
+        if current is None or bytes(current.data(SECRET_MARKER_FORMAT)) != pending:
+            return False
+        clipboard.clear()
         return True
 
     def apply_theme(self, theme_name):

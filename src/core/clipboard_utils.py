@@ -4,7 +4,7 @@ Windows pano modulleri (win32clipboard / win32con) disaridan verilir; bu sayede 
 gercek panoya dokunmadan sahte (mock) bir modulle test edilebilir. CF_HTML yolu YALNIZCA
 Windows'tadir; macOS/Linux'ta Qt QClipboard/QMimeData kullanilir (QtClipboard, dosyanin sonu).
 
-Geri yuklenen bicimler: CF_UNICODETEXT, "HTML Format", "Rich Text Format".
+Geri yuklenen bicimler: CF_UNICODETEXT, "HTML Format", "Rich Text Format" ve gizlilik isaretleri (PRIVACY_FORMAT_NAMES).
 Geri YUKLENMEYEN bicimler (resim/CF_DIB/CF_BITMAP, CF_HDROP dosya listesi, uygulamaya ozel
 ve gecikmeli olusturulan (delayed rendering) bicimler): bunlar GDI/bellek tutamaclari ya da
 sahibi uygulamanin renderlamasina bagli oldugundan guvenle kopyalanamaz. Panoda boyle bir
@@ -41,6 +41,30 @@ _HEADER_TEMPLATE = (
 # Windows tarafindan baska bicimlerden otomatik uretilen (sentezlenen) bicimler: kayip sayilmaz
 _SYNTHESIZED_FORMATS = {1, 7, 16}  # CF_TEXT, CF_OEMTEXT, CF_LOCALE
 _CF_UNICODETEXT = 13
+
+# Gizlilik isaretleri: icerigi pano gecmisinin (Win+V), bulut panosunun ve pano izleyen programlarin disinda tutar.
+# Parola yoneticileri (ve FlexiKey'in gizli ogeyi kopyalamasi) bunlari koyar. Kaydet/geri yukle bunlari da tasimazsa
+# geri yuklenen parola gecmise duser; FlexiKey'in yapistirma icin panoya gecici koydugu icerik de gecmise girmesin.
+EXCLUDE_MONITOR_FORMAT_NAME = "ExcludeClipboardContentFromMonitorProcessing"
+HISTORY_FORMAT_NAME = "CanIncludeInClipboardHistory"
+CLOUD_FORMAT_NAME = "CanUploadToCloudClipboard"
+PRIVACY_FORMAT_NAMES = (EXCLUDE_MONITOR_FORMAT_NAME, HISTORY_FORMAT_NAME, CLOUD_FORMAT_NAME)
+_DWORD_ZERO = b"\x00\x00\x00\x00"  # "hayir": gecmise/buluta alinmaz (Exclude... bicimi icin icerik onemsiz)
+
+
+def mark_private(cb: Any) -> None:
+    """Acik panoya gizlilik isaretlerini yazar (SetClipboardData'dan sonra, pano kapanmadan)."""
+    for name in PRIVACY_FORMAT_NAMES:
+        cb.SetClipboardData(cb.RegisterClipboardFormat(name), _DWORD_ZERO)
+
+
+def private_mime_data(text: str) -> QMimeData:
+    """Duz metin + gizlilik isaretleri (Qt yolu): Windows'ta Qt bu adlarla pano bicimi kaydeder ve baytlari aynen yazar."""
+    mime = QMimeData()
+    mime.setText(text)
+    for name in PRIVACY_FORMAT_NAMES:
+        mime.setData(f'application/x-qt-windows-mime;value="{name}"', QByteArray(_DWORD_ZERO))
+    return mime
 
 
 def build_cf_html(fragment: str) -> bytes:
@@ -117,6 +141,7 @@ def snapshot_clipboard(cb: Any, con: Any) -> ClipboardSnapshot:
             getattr(con, "CF_UNICODETEXT", _CF_UNICODETEXT),
             cb.RegisterClipboardFormat(HTML_FORMAT_NAME),
             cb.RegisterClipboardFormat(RTF_FORMAT_NAME),
+            *(cb.RegisterClipboardFormat(name) for name in PRIVACY_FORMAT_NAMES),
         }
         for fmt in supported:
             try:
@@ -138,12 +163,14 @@ def snapshot_clipboard(cb: Any, con: Any) -> ClipboardSnapshot:
 
 
 def set_clipboard_rich_text(cb: Any, con: Any, html_fragment: str, plain_text: str) -> None:
-    """Panoya HTML (CF_HTML, UTF-8 bayt) + duz metin yazar; pano her durumda kapatilir."""
+    """Panoya HTML (CF_HTML, UTF-8 bayt) + duz metin yazar; pano her durumda kapatilir.
+    Yalnizca yapistirma icin gecicidir: gizlilik isaretleriyle pano gecmisine / buluta girmez."""
     html_bytes = build_cf_html(html_fragment)
     with open_clipboard(cb):
         cb.EmptyClipboard()
         cb.SetClipboardData(cb.RegisterClipboardFormat(HTML_FORMAT_NAME), html_bytes)
         cb.SetClipboardData(getattr(con, "CF_UNICODETEXT", _CF_UNICODETEXT), plain_text)
+        mark_private(cb)
 
 
 def restore_clipboard(cb: Any, snapshot: ClipboardSnapshot,
