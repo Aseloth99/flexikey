@@ -114,12 +114,22 @@ class DownloadStateTests(DialogTestCase):
         dialog._on_update()                                   # ikinci tıklama (örn. çift tık)
         self.assertEqual(self.signals["accepted"], 1)
 
+    def test_percent_in_english(self):
+        dialog = self.make(lang="en")
+        dialog.update_btn.click()
+        dialog.update_download_progress(5_000_000, 10_000_000, 0.0)
+        dialog.progress_bar.finish_animation()
+        self.assertEqual(dialog.progress_label.text(), "4.77 MB / 9.54 MB (50%)")
+        self.assertEqual(dialog.progress_bar.text(), "50%")
+
     def test_progress_shows_bytes_percent_and_speed(self):
         dialog = self.make()
         dialog.update_btn.click()
         dialog.update_download_progress(5_000_000, 10_000_000, 2.5)
         self.assertEqual(dialog.progress_bar.value(), 50)
-        self.assertEqual(dialog.progress_label.text(), "4.77 MB / 9.54 MB (50%) - 2.50 MB/s")
+        self.assertEqual(dialog.progress_label.text(), "4.77 MB / 9.54 MB (%50) - 2.50 MB/s")
+        dialog.progress_bar.finish_animation()
+        self.assertEqual(dialog.progress_bar.text(), "%50", "the bar and the line write the percent alike")
         dialog.update_download_progress(1024, 0, 0.0)          # toplam bilinmiyor: belirsiz çubuk
         self.assertEqual(dialog.progress_bar.maximum(), 0)
         self.assertEqual(dialog.progress_label.text(), "1.00 KB indirildi")

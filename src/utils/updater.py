@@ -131,7 +131,7 @@ class UpdateChecker(QObject):
     check_failed = pyqtSignal()  # yalnızca manuel kontrol başarısız olursa
     notice_received = pyqtSignal(object)  # remote_notice.Notice (duyuru satırı)
 
-    CURRENT_VERSION = "1.0.10"
+    CURRENT_VERSION = "1.0.11"
     UPDATE_CHECK_URL = "https://macik.com.tr/api/updates/check"
     APP_NAME = "FlexiKey"
     # Açılışta: son denetim bundan eskiyse hemen denetlenir (uzun süre açılmayanlar yeni sürümü hemen görür).

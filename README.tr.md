@@ -87,6 +87,8 @@ alanları algılanamaz; asıl güvence zaman aşımıdır.
 **Resmî ikili.** `FlexiKey.exe` dosyasını [macik.com.tr](https://macik.com.tr) adresinden indirin. Tek dosyadır, kurulum
 gerektirmez. Uygulama içi güncellemelerin dosyayı değiştirebilmesi için yazılabilir bir klasöre (örneğin Masaüstü) koyun.
 
+Her [GitHub sürümünde](https://github.com/Aseloth99/flexikey/releases/latest) o sürümün etiketindeki kaynaktan derlenmiş bir exe de bulunur. Güncellemelerini resmî sürümle aynı kanaldan alır.
+
 **Kaynaktan.** Windows ve Python 3.12 gerekir (projenin geliştirildiği ve denendiği sürüm).
 
 ```powershell

@@ -85,6 +85,8 @@ Electron apps cannot be detected, so the timeout is the real safeguard.
 **Official binary.** Download `FlexiKey.exe` from [macik.com.tr](https://macik.com.tr). It is a single file and needs no
 installer. Put it in a folder you can write to (for example the Desktop) so that in-app updates can replace it.
 
+Each [GitHub release](https://github.com/Aseloth99/flexikey/releases/latest) also carries an exe built from this repository's source at that version's tag. It takes its updates from the same channel as the official build.
+
 **From source.** Requires Windows and Python 3.12 (the version the project is developed and tested with).
 
 ```powershell
