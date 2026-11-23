@@ -437,5 +437,15 @@ class SecretTextsTests(unittest.TestCase):
         self.assertIn("3", format_settings_warning("secret_locked", "3", "tr"))
 
 
+def tearDownModule():
+    """Testlerde ebeveynsiz açılan diyaloglar süreç sonuna kalmasın: Python kapanırken QApplication'dan sonra yok
+    edilirlerse süreç erişim ihlaliyle (139) çöker. Uygulama bunu kendi kapanışında yapar (FlexiKeyApp._teardown_qt_objects)."""
+    from PyQt6 import sip
+
+    for widget in QApplication.topLevelWidgets():
+        if not sip.isdeleted(widget):
+            sip.delete(widget)
+
+
 if __name__ == "__main__":
     unittest.main()

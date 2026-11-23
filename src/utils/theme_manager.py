@@ -10,7 +10,7 @@ import math
 import tempfile
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, Qt, QRectF, QPointF
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF
+from PyQt6.QtGui import QIcon, QImage, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath, QPolygonF
 
 # ─────────────────────────────────────────────
 # Programatik İkon Üreticileri (Lumina stili)
@@ -36,29 +36,68 @@ def _hex_rgb(color: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-_CHECKMARK_PATH: str | None = None
+def _luminance(color: str) -> float:
+    def lin(v: int) -> float:
+        c = v / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
 
-def get_checkmark_icon_path() -> str:
-    """QCheckBox için beyaz onay işareti (checkmark) görseli oluşturur ve yolunu döner."""
-    global _CHECKMARK_PATH
-    if _CHECKMARK_PATH and os.path.exists(_CHECKMARK_PATH):
-        return _CHECKMARK_PATH
-    
-    tmp_path = os.path.join(tempfile.gettempdir(), 'flexikey_check_white.png')
-    pix = QPixmap(16, 16)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
+    r, g, b = _hex_rgb(color)
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = _luminance(a), _luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _readable(color: str, background: str, target: float = 4.5) -> str:
+    """`color`'ı, `background` üzerinde `target` kontrastına ulaşana dek (koyu zeminde beyaza, açıkta siyaha) çeker."""
+    if _contrast(color, background) >= target:
+        return color
+    toward = "#ffffff" if _luminance(background) < 0.4 else "#000000"
+    for step in range(1, 21):
+        candidate = _mix(toward, color, step / 20.0)
+        if _contrast(candidate, background) >= target:
+            return candidate
+    return toward
+
+
+def _nav_colors(p: dict) -> tuple[str, str]:
+    """Ayarlar kenar çubuğunda seçili sekme (Lumina ile aynı kural): kenar çubuğu zeminine %16 (koyu) / %13 (açık)
+    vurgu karışmış hafif zemin ve onun üstünde en az 4,5:1 okunan vurgu yazısı."""
+    dark = bool(p.get("is_dark"))
+    tint = _mix(p["accent"], p["surface"], 0.16 if dark else 0.13)
+    return tint, _readable(p["accent_hi"] if dark else p["accent2"], tint, 4.5)
+
+
+_CHECKMARK_PATHS: dict[str, str] = {}
+_CHECKMARK_SCALE = 4  # 16 px kutu 64 px çizilir; Qt simgeyi kutuya küçültür (%150 ölçekte bulanık tik olmasın)
+
+
+def get_checkmark_icon_path(color_hex: str = "#ffffff") -> str:
+    """QCheckBox onay işareti (tik) görselini üretir ve yolunu döner.
+
+    MediaCompressor ve TransferTCP aynı çizimi kullanır: 16x16 içerik kutusunda (3,8)-(6,11)-(13,4), 2.2 px yuvarlak uçlu
+    kalem, 4x çözünürlükte PNG. QImage ile çizilir (QGuiApplication gerekmez)."""
+    key = color_hex.lower()
+    cached = _CHECKMARK_PATHS.get(key)
+    if cached and os.path.exists(cached):
+        return cached
+    s = _CHECKMARK_SCALE
+    tmp_path = os.path.join(tempfile.gettempdir(), f"flexikey_check_{key.lstrip('#')}_x{s}.png")
+    img = QImage(16 * s, 16 * s, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor("#ffffff"), 2.2)
+    pen = QPen(QColor(color_hex), 2.2 * s)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
-    p.drawLine(3, 8, 6, 11)
-    p.drawLine(6, 11, 13, 4)
+    p.drawPolyline(QPolygonF([QPointF(3 * s, 8 * s), QPointF(6 * s, 11 * s), QPointF(13 * s, 4 * s)]))
     p.end()
-    pix.save(tmp_path)
-    _CHECKMARK_PATH = tmp_path.replace('\\', '/')
-    return _CHECKMARK_PATH
+    img.save(tmp_path)
+    _CHECKMARK_PATHS[key] = tmp_path.replace('\\', '/')
+    return _CHECKMARK_PATHS[key]
 
 
 def _tick(p: QPainter, color: str, width: float) -> None:
@@ -729,8 +768,10 @@ def _build_palette(is_dark: bool, accent_key: str) -> dict:
 
 def _build_qss(p: dict) -> str:
     """Temiz, modern ve rounded bileşenler için tam QSS"""
-    chk_path = get_checkmark_icon_path()
+    chk_path = get_checkmark_icon_path("#ffffff")
+    chk_muted_path = get_checkmark_icon_path(p["text_muted"])
     chev_path = get_chevron_down_icon_path(p["text_secondary"])
+    nav_tint, nav_ink = _nav_colors(p)
     return f"""
         /* ── Temel Ayarlar ── */
         * {{
@@ -1167,7 +1208,8 @@ def _build_qss(p: dict) -> str:
             margin: 6px 2px;
             max-width: 1px;
         }}
-        QPushButton[class="seg"], QPushButton[class="seg-danger"] {{
+        /* Düzenle | Aktif/Pasif | Sil: hepsi nötr (Sil dahil; silme kırmızısı yalnızca onay kutusunun düğmesinde) */
+        QPushButton[class="seg"] {{
             background-color: transparent;
             border: none;
             border-radius: 9px;
@@ -1180,17 +1222,11 @@ def _build_qss(p: dict) -> str:
         QPushButton[class="seg"]:hover {{
             background-color: {p['surface_active']};
         }}
-        QPushButton[class="seg-danger"] {{
-            color: {p['danger_text']};
-        }}
-        QPushButton[class="seg-danger"]:hover {{
-            background-color: {p['danger_soft']};
-        }}
-        QPushButton[class="seg"]:pressed, QPushButton[class="seg-danger"]:pressed {{
+        QPushButton[class="seg"]:pressed {{
             background-color: {p['surface']};
         }}
         /* seçim yokken (araç çubuğu): pasif düğmeler soluk, üzerine gelince tepki yok */
-        QPushButton[class="seg"]:disabled, QPushButton[class="seg-danger"]:disabled {{
+        QPushButton[class="seg"]:disabled {{
             background-color: transparent;
             color: {p['text_muted']};
         }}
@@ -1387,12 +1423,48 @@ def _build_qss(p: dict) -> str:
             background-color: {p['surface_active']};
         }}
 
-        /* ── CheckBox ── */
+        /* ── Ayarlar kenar çubuğu: dört uygulamada aynı iskelet (Lumina `dialog_stylesheet`). Seçili sekme vurgu
+           tonlu hafif zemin + vurgu yazı + solda 3 px vurgu çizgisi; diğerleri soluk yazı. ── */
+        QFrame#sidebar {{
+            background-color: {p['surface']};
+            border: 1px solid {p['border']};
+            border-radius: 8px;
+        }}
+        QPushButton#nav_btn {{
+            text-align: left;
+            padding-left: 7px;
+            color: {p['text_muted']};
+            font-size: 13px;
+            font-weight: 500;
+            background: transparent;
+            border: none;
+            border-left: 3px solid transparent;
+            border-radius: 6px;
+            min-height: 38px;
+            max-height: 38px;
+            outline: none;
+        }}
+        QPushButton#nav_btn:hover {{
+            background-color: {p['surface2']};
+            color: {p['text']};
+        }}
+        QPushButton#nav_btn:checked {{
+            background-color: {nav_tint};
+            color: {nav_ink};
+            border-left: 3px solid {p['accent']};
+            font-weight: 700;
+        }}
+
+        /* ── CheckBox:MediaCompressor / TransferTCP / Lumina ile aynı (18 px kutu, 5 px köşe, 1 px kenar,
+           seçiliyken vurgu dolgu + beyaz tik; pasifte gri). Durum kuralları aynı özgüllükte, sıra önemli. ── */
         QCheckBox {{
             spacing: 10px;
             color: {p['text']};
             background: transparent;
             font-size: 9.5pt;
+        }}
+        QCheckBox:disabled {{
+            color: {p['text_muted']};
         }}
         QCheckBox::indicator {{
             width: 18px;
@@ -1401,14 +1473,27 @@ def _build_qss(p: dict) -> str:
             background-color: {p['surface2']};
             border: 1px solid {p['border_strong']};
         }}
-        QCheckBox::indicator:hover {{
-            border-color: {p['accent']};
+        QCheckBox::indicator:unchecked:hover {{
             background-color: {p['surface']};
+            border-color: {p['accent']};
         }}
         QCheckBox::indicator:checked {{
             background-color: {p['accent2']};
             border-color: {p['accent2']};
             image: url("{chk_path}");
+        }}
+        QCheckBox::indicator:checked:hover {{
+            background-color: {p['accent']};
+            border-color: {p['accent']};
+        }}
+        QCheckBox::indicator:unchecked:disabled {{
+            background-color: transparent;
+            border-color: {p['border']};
+        }}
+        QCheckBox::indicator:checked:disabled {{
+            background-color: {p['border_strong']};
+            border-color: {p['border_strong']};
+            image: url("{chk_muted_path}");
         }}
 
         /* ── ScrollBar ── */
@@ -1499,6 +1584,9 @@ def _build_qss(p: dict) -> str:
             background-color: {p['accent2']};
             color: #ffffff;
             font-weight: 700;
+        }}
+        QMenu::item:disabled {{
+            color: {p['text_muted']};  /* pasif satır soluk yazılır; simgesini Qt soldurur */
         }}
         QMenu::indicator {{
             width: 0px;

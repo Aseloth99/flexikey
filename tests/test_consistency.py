@@ -385,6 +385,13 @@ class MainWindowTests(_Base):
             self.window.toggle_expansion()
         self.assertEqual(opened, [], "seçim yokken hiçbir kutu açılmamalı")
 
+    def test_delete_segment_is_neutral_like_its_siblings(self):
+        """"Sil" kırmızı yazılmaz: Düzenle ve Aktif/Pasif ile aynı sınıf; kırmızı yalnızca onay kutusunda."""
+        for prefix in ("hotkey", "exp"):
+            classes = {getattr(self.window, f"{prefix}_{s}_btn").property("class") for s in ("edit", "toggle", "delete")}
+            self.assertEqual(classes, {"seg"}, prefix)
+        self.assertNotIn("seg-danger", QApplication.instance().styleSheet())
+
     def test_about_and_guide_use_the_custom_box_with_theme_coloured_link(self):
         shown = []
         MessageBox.set_test_hook(lambda box: shown.append((box.windowTitle(), box.text())))
@@ -447,6 +454,257 @@ class MainWindowTests(_Base):
                 self.assertNotIn("»", text)
                 self.assertEqual(len(re.findall(r"\. ", text)), 1, "başlık + tek cümle rehber")
 
+
+    def test_menu_rows_use_the_colored_semantic_icons(self):
+        from src.gui.toolbar_icons import menu_icon
+
+        for action, name in ((self.window.new_hotkey_action, "add"), (self.window.new_expansion_action, "rename"),
+                             (self.window.exit_action, "exit"), (self.window.settings_action, "settings"),
+                             (self.window.help_action, "guide"), (self.window.about_action, "info")):
+            self.assertTrue(_same_icon(action.icon(), menu_icon(name)), name)
+        self.window._refresh_accent_icons()   # tema/vurgu değişince de aynı simgeler
+        self.assertTrue(_same_icon(self.window.settings_action.icon(), menu_icon("settings")))
+        self.assertTrue(_same_icon(self.window.exit_action.icon(), menu_icon("exit")))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Kartın sağ tık menüsü: Düzenle · Pasif/Aktif Yap · Kopyala · — · Sil (mevcut yöntemler; gizli değer panoya çıkmaz)
+# ---------------------------------------------------------------------------------------------------------------
+SECRET_VALUE = "Gizli-Deger-42"
+HOTKEYS = [
+    {"shortcut": "Ctrl+Alt+7", "action_type": "text", "action_value": "merhaba dünya, uzun bir metin", "enabled": True},
+    {"shortcut": "Ctrl+Alt+8", "action_type": "command", "action_value": "hesap_makinesi", "enabled": False},
+    {"shortcut": "Ctrl+Alt+9", "action_type": "text", "action_value": SECRET_VALUE + "h", "enabled": True,
+     "is_secret": True},
+]
+EXPANSIONS = [
+    {"trigger": ";adr", "replacement": "Atatürk Cad. No 5\nAnkara", "enabled": True},
+    {"trigger": ";imza", "replacement": "<b>Kalın</b> imza", "is_rich": True, "enabled": False},
+    {"trigger": ";pw", "replacement": SECRET_VALUE, "enabled": True, "is_secret": True},
+]
+MENU_TR = ["Düzenle", "Pasif Yap", "Kopyala", "", "Sil"]
+
+
+def _menu_rows(menu):
+    return [("" if a.isSeparator() else a.text()) for a in menu.actions()]
+
+
+class CardMenuTests(_Base):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._profile = _TempProfile()
+        cls._profile.__enter__()
+        from src.core.hotkey_manager import HotkeyManager
+        cls.settings = SettingsManager()
+        cls.settings._seed_file = None
+        data = cls.settings.load_settings()
+        data.update(theme="dark", language="tr", hotkeys=[], expansions=[])
+        cls.settings.save_settings(data)
+        cls.window = mw.MainWindow(cls.settings, ThemeManager(cls.qapp), HotkeyManager(), NotificationManager(), None)
+        cls.window.show()
+        cls.qapp.processEvents()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.window.close()
+        cls.window.deleteLater()
+        cls.qapp.processEvents()
+        cls._profile.__exit__(None, None, None)
+
+    def setUp(self):
+        super().setUp()
+        import copy
+        data = self.settings.load_settings()
+        data.update(hotkeys=copy.deepcopy(HOTKEYS), expansions=copy.deepcopy(EXPANSIONS))
+        self.settings.save_settings(data)
+        self.window.load_hotkeys(keep_row=0)
+        self.window.load_expansions(keep_row=0)
+        self.qapp.processEvents()
+        self.toasts = []
+        patcher = mock.patch.object(self.window, "show_toast",
+                                    side_effect=lambda text, *a, **k: (self.toasts.append(text), True)[1])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _menu(self, prefix, row):
+        menu = self.window.card_menu(prefix, row)
+        self.addCleanup(menu.deleteLater)
+        return menu
+
+    def _action(self, menu, text):
+        return next(a for a in menu.actions() if a.text() == text)
+
+    def test_order_labels_and_icons(self):
+        from src.gui.toolbar_icons import menu_icon
+
+        for prefix in ("hotkey", "exp"):
+            menu = self._menu(prefix, 0)
+            self.assertEqual(_menu_rows(menu), MENU_TR, prefix)
+            self.assertTrue(menu.actions()[3].isSeparator())
+            for action, name in zip([a for a in menu.actions() if not a.isSeparator()],
+                                    ("rename", "bolt", "copy", "trash")):
+                self.assertTrue(_same_icon(action.icon(), menu_icon(name)), (prefix, name))
+        locales.set_preferred_language("en")
+        self.window.lang = "en"
+        self.addCleanup(setattr, self.window, "lang", "tr")
+        self.assertEqual(_menu_rows(self._menu("exp", 0)), ["Edit", "Turn Off", "Copy", "", "Delete"])
+        self.assertEqual(_menu_rows(self._menu("exp", 1))[1], "Turn On")
+
+    def test_toggle_label_follows_the_state(self):
+        self.assertEqual(_menu_rows(self._menu("hotkey", 0))[1], "Pasif Yap")   # aktif
+        self.assertEqual(_menu_rows(self._menu("hotkey", 1))[1], "Aktif Yap")   # pasif
+        self.assertEqual(_menu_rows(self._menu("exp", 1))[1], "Aktif Yap")
+        self._action(self._menu("hotkey", 0), "Pasif Yap").trigger()
+        self.assertFalse(self.settings.load_settings()["hotkeys"][0]["enabled"])
+        self.assertEqual(_menu_rows(self._menu("hotkey", 0))[1], "Aktif Yap")
+
+    def test_each_entry_calls_the_existing_handler_for_that_card(self):
+        for prefix, names in (("hotkey", ("edit_hotkey", "toggle_hotkey", "delete_hotkey")),
+                              ("exp", ("edit_expansion", "toggle_expansion", "delete_expansion"))):
+            with mock.patch.object(self.window, names[0]) as edit, mock.patch.object(self.window, names[1]) as toggle, \
+                    mock.patch.object(self.window, names[2]) as delete, \
+                    mock.patch.object(self.window, "copy_item") as copy_item:
+                menu = self._menu(prefix, 1)
+                for text in ("Düzenle", "Aktif Yap", "Kopyala", "Sil"):
+                    self._action(menu, text).trigger()
+                mocks = {"edit": edit, "toggle": toggle, "delete": delete}
+                for key, m in mocks.items():
+                    m.assert_called_once_with(1)
+                copy_item.assert_called_once_with(prefix, 1)
+
+    def test_toggle_hits_the_card_of_the_menu_even_if_another_is_selected(self):
+        self.window.hotkeys_list.setCurrentRow(0)
+        self._action(self._menu("hotkey", 1), "Aktif Yap").trigger()
+        rows = self.settings.load_settings()["hotkeys"]
+        self.assertTrue(rows[1]["enabled"])
+        self.assertTrue(rows[0]["enabled"], "seçili kart değil, menüsü açılan kart değişir")
+        self.assertEqual(self.toasts[-1], "Kısayol 'Ctrl + Alt + 8' aktif edildi.")
+
+    def test_delete_goes_through_the_existing_confirmation(self):
+        asked = []
+        MessageBox.set_test_hook(lambda box: (asked.append(box.text()), MessageBox.StandardButton.No)[1])
+        self._action(self._menu("exp", 0), "Sil").trigger()
+        self.assertEqual(asked, [locales.t("confirm_delete_expansion", "tr")])
+        self.assertEqual(len(self.settings.load_settings()["expansions"]), 3, "Hayır: silinmez")
+        MessageBox.set_test_hook(lambda box: MessageBox.StandardButton.Yes)
+        self._action(self._menu("exp", 0), "Sil").trigger()
+        self.assertEqual([e["trigger"] for e in self.settings.load_settings()["expansions"]], [";imza", ";pw"])
+
+    def test_edit_opens_the_same_editor_as_double_click(self):
+        seen = []
+        with mock.patch.object(mw.ExpansionDialog, "exec", lambda dialog: (seen.append(dialog), 0)[1]):
+            self._action(self._menu("exp", 1), "Düzenle").trigger()
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].__class__.__name__, "ExpansionDialog")
+
+    def test_copy_puts_the_full_content_on_the_clipboard_without_echoing_it(self):
+        clipboard = QApplication.clipboard()
+        self._action(self._menu("hotkey", 0), "Kopyala").trigger()
+        self.assertEqual(clipboard.text(), "merhaba dünya, uzun bir metin")
+        self._action(self._menu("hotkey", 1), "Kopyala").trigger()
+        self.assertEqual(clipboard.text(), "Hesap Makinesi", "komut: kartta görünen adı")
+        self._action(self._menu("exp", 0), "Kopyala").trigger()
+        self.assertEqual(clipboard.text(), "Atatürk Cad. No 5\nAnkara")
+        self._action(self._menu("exp", 1), "Kopyala").trigger()
+        mime = clipboard.mimeData()
+        self.assertTrue(mime.hasHtml())
+        self.assertIn("<b>Kalın</b>", mime.html())
+        self.assertEqual(mime.text(), "Kalın imza", "biçimli metin: düz hâli de panoda")
+        self.assertEqual(self.toasts, ["Kısayol 'Ctrl + Alt + 7' içeriği panoya kopyalandı.",
+                                       "Kısayol 'Ctrl + Alt + 8' içeriği panoya kopyalandı.",
+                                       "Genişletme ';adr' içeriği panoya kopyalandı.",
+                                       "Genişletme ';imza' içeriği panoya kopyalandı."])
+        for toast in self.toasts:
+            self.assertNotIn("merhaba", toast)
+            self.assertNotIn("Ankara", toast)
+
+    def test_secret_value_never_reaches_the_clipboard_or_the_screen(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText("önceki pano")
+        for prefix in ("hotkey", "exp"):
+            menu = self._menu(prefix, 2)
+            copy_action = self._action(menu, "Kopyala")
+            self.assertFalse(copy_action.isEnabled(), prefix)
+            self.assertEqual(copy_action.toolTip(), "Gizli değerler panoya kopyalanmaz.")
+            self.assertTrue(menu.toolTipsVisible())
+            copy_action.trigger()                          # pasif eylem tetiklenmez; yöntem de reddeder
+            self.assertFalse(self.window.copy_item(prefix, 2))
+            for action in menu.actions():
+                self.assertNotIn(SECRET_VALUE, action.text() + action.toolTip() + action.statusTip())
+            self.assertEqual([a.isEnabled() for a in menu.actions() if not a.isSeparator()],
+                             [True, True, False, True], "gizli öğe de düzenlenir / silinir")
+        self.assertEqual(clipboard.text(), "önceki pano")
+        self.assertEqual(self.toasts, [])
+
+    def test_delete_label_is_neutral_and_only_the_trash_icon_is_red(self):
+        menu = self._menu("exp", 0)
+        menu.ensurePolished()
+        menu.adjustSize()
+        image = menu.grab().toImage()
+        ratio = image.devicePixelRatio()
+
+        def region(action, x0, x1):
+            geo = menu.actionGeometry(action)
+            return {image.pixelColor(x, y).name()
+                    for y in range(int(geo.top() * ratio), int(geo.bottom() * ratio))
+                    for x in range(int((geo.left() + x0) * ratio), int(min(geo.left() + x1, geo.right()) * ratio))}
+
+        def reddish(name):
+            from PyQt6.QtGui import QColor
+            c = QColor(name)
+            return c.red() >= 150 and c.red() - max(c.green(), c.blue()) >= 70
+
+        edit, delete = self._action(menu, "Düzenle"), self._action(menu, "Sil")
+        self.assertTrue(any(reddish(c) for c in region(delete, 0, 36)), "çöp simgesi kırmızı kalır")
+        text_sil, text_edit = region(delete, 40, 10_000), region(edit, 40, 10_000)
+        self.assertFalse([c for c in text_sil if reddish(c)], "Sil yazısı kırmızı değil")
+        self.assertEqual(text_sil, text_edit, "Sil ile Düzenle yazısı aynı renk")
+
+    def test_right_click_selects_the_card_under_the_cursor_and_opens_its_menu(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QContextMenuEvent
+        from PyQt6.QtWidgets import QMenu
+
+        listing = self.window.hotkeys_list
+        listing.setCurrentRow(0)
+        opened, changes = [], []
+        listing.selection_changed.connect(changes.append)
+        self.addCleanup(listing.selection_changed.disconnect, changes.append)
+
+        def fake_exec(menu, *args):
+            opened.append((_menu_rows(menu), args[0] if args else None))
+            return None
+
+        card = listing.card_at(1)
+        where = card.mapToGlobal(QPoint(20, 10))
+        with mock.patch.object(QMenu, "exec", fake_exec):
+            QApplication.sendEvent(card, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 10), where))
+            self.assertEqual(listing.selected_index(), 1, "sağ tık altta kalan kartı seçer")
+            self.assertEqual(changes, [1])
+            QApplication.sendEvent(card, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 10), where))
+            self.assertEqual(changes, [1], "zaten seçili kart: seçim yeniden değişmez")
+        self.assertEqual(opened, [(["Düzenle", "Aktif Yap", "Kopyala", "", "Sil"], where)] * 2)
+        self.assertTrue(listing.hasFocus() or not self.window.isActiveWindow())
+
+    def test_menu_key_and_shift_f10_open_the_selected_cards_menu(self):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtGui import QContextMenuEvent
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QMenu
+
+        listing = self.window.expansions_list
+        listing.setCurrentRow(1)
+        opened = []
+        with mock.patch.object(QMenu, "exec", lambda menu, *a: opened.append(_menu_rows(menu)[1])):
+            QTest.keyClick(listing, Qt.Key.Key_F10, Qt.KeyboardModifier.ShiftModifier)
+            QApplication.sendEvent(listing, QContextMenuEvent(QContextMenuEvent.Reason.Keyboard, QPoint(1, 1)))
+            QApplication.sendEvent(listing, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(1, 1)))
+            listing.set_filter("bulunmayan")               # süzgeç seçili kartı gizledi: menü açılmaz
+            self.addCleanup(listing.set_filter, "")
+            QTest.keyClick(listing, Qt.Key.Key_F10, Qt.KeyboardModifier.ShiftModifier)
+        self.assertEqual(opened, ["Aktif Yap", "Aktif Yap"], "boşlukta fare sağ tıkı ve gizli kart menü açmaz")
+        self.assertEqual(listing.selected_index(), -1)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Tepsi: iskelet, tek tık, dinamik Göster/Gizle, vurguya uyan simgeler
@@ -529,6 +787,15 @@ class TraySkeletonTests(_Base):
         self.tray.refresh_icons()
         self.assertFalse(self.tray.show_action.icon().isNull())
 
+    def test_rows_use_the_colored_semantic_icons(self):
+        from src.gui.toolbar_icons import menu_icon
+
+        self.tray.refresh_icons()
+        for item, name in ((self.tray.update_action, "update"), (self.tray.show_action, "view"),
+                           (self.tray.settings_action, "settings"), (self.tray.lang_menu, "globe"),
+                           (self.tray.quick_menu, "bolt"), (self.tray.exit_action, "exit")):
+            self.assertTrue(_same_icon(item.icon(), menu_icon(name)), name)
+
 
 # ---------------------------------------------------------------------------------------------------------------
 # Görünüm: Material vurgu ailesi, nötr gri açık tema, lacivert/slate yok
@@ -570,6 +837,51 @@ class PaletteTests(unittest.TestCase):
         self.assertEqual(accent_hex(), ACCENTS["yellow"]["accent2"])       # açıkta okunur derin ton
         manager.set_theme("dark", "yellow")
         self.assertEqual(accent_hex(), ACCENTS["yellow"]["accent"])
+
+
+class CheckboxSpecTests(unittest.TestCase):
+    """Onay kutusu MediaCompressor/TransferTCP/Lumina ile aynı: 18 px kutu, 5 px köşe, 1 px kenar, seçiliyken vurgu
+    dolgu + 4x çizilmiş beyaz tik, pasif+seçiliyken gri dolgu + soluk tik."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.qapp = QApplication.instance() or QApplication([])   # _build_qss ok simgesini QPixmap ile çizer
+
+    @staticmethod
+    def _rule(qss: str, selector: str) -> str:
+        match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", qss)
+        assert match, selector
+        return " ".join(match.group(1).split())
+
+    def test_states_use_the_shared_geometry_and_the_chosen_accent(self):
+        from src.utils.theme_manager import _build_palette, _build_qss
+
+        for dark, accent in ((True, "violet"), (False, "rose")):
+            p = _build_palette(dark, accent)
+            qss = _build_qss(p)
+            base = self._rule(qss, "QCheckBox::indicator")
+            for decl in ("width: 18px;", "height: 18px;", "border-radius: 5px;",
+                         f"background-color: {p['surface2']};", f"border: 1px solid {p['border_strong']};"):
+                self.assertIn(decl, base)
+            self.assertIn(f"border-color: {p['accent']};", self._rule(qss, "QCheckBox::indicator:unchecked:hover"))
+            checked = self._rule(qss, "QCheckBox::indicator:checked")
+            self.assertIn(f"background-color: {ACCENTS[accent]['accent2']};", checked)
+            self.assertRegex(checked, r'image: url\("[^"]*flexikey_check_ffffff_x4\.png"\)')
+            disabled = self._rule(qss, "QCheckBox::indicator:checked:disabled")
+            self.assertIn(f"background-color: {p['border_strong']};", disabled)
+            self.assertIn(f"flexikey_check_{p['text_muted'].lstrip('#')}_x4.png", disabled)
+            # aynı özgüllük: pasif kuralları üzerine gelme kurallarından SONRA gelir
+            self.assertLess(qss.index("QCheckBox::indicator:checked:hover"),
+                            qss.index("QCheckBox::indicator:unchecked:disabled"))
+
+    def test_tick_is_drawn_at_four_times_the_box(self):
+        from PyQt6.QtGui import QImage
+        from src.utils.theme_manager import get_checkmark_icon_path
+
+        img = QImage(get_checkmark_icon_path("#ffffff"))
+        self.assertEqual((img.width(), img.height()), (64, 64))
+        self.assertEqual(img.pixelColor(24, 44).name(), "#ffffff")   # (6, 11) köşesi x4
+        self.assertEqual(img.pixelColor(2, 2).alpha(), 0)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -673,6 +985,142 @@ class DestructiveConfirmTests(_Base):
         self.assertFalse(manager._ask_user_to_confirm("bilgisayari_kapat"))
         self.assertEqual(seen[0][0], "Onay Gerekli" if manager.lang == "tr" else "Confirmation Required")
         self.assertEqual(seen[0][1], MessageBox.Icon.Warning)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Ayarlar iskeleti (Lumina ile aynı): solda renkli simgeli sekmeler; seçili sekme vurgu tonlu zemin + okunur vurgu
+# yazı + solda 3 px vurgu çizgisi. Menü satırlarında renkli anlam simgeleri (aynı anlam her uygulamada aynı renk).
+# ---------------------------------------------------------------------------------------------------------------
+def _rgb(color):
+    h = color.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _lumina_mix(a, b, amount):
+    (ra, ga, ba), (rb, gb, bb) = _rgb(a), _rgb(b)
+    return "#" + "".join(f"{max(0, min(255, round(x + (y - x) * amount))):02x}" for x, y in ((ra, rb), (ga, gb), (ba, bb)))
+
+
+def _lumina_luminance(color):
+    def lin(v):
+        s = v / 255.0
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (lin(v) for v in _rgb(color))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _lumina_contrast(a, b):
+    la, lb = _lumina_luminance(a), _lumina_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _close(a, b, tolerance=1):
+    return all(abs(x - y) <= tolerance for x, y in zip(_rgb(a), _rgb(b)))
+
+
+def _same_icon(a, b, size=32):
+    return a.pixmap(size, size).toImage() == b.pixmap(size, size).toImage()
+
+
+def _top_colors(icon, size=32, count=3):
+    from collections import Counter
+
+    img = icon.pixmap(size, size).toImage()
+    seen = Counter(img.pixelColor(x, y).name() for x in range(size) for y in range(size)
+                   if img.pixelColor(x, y).alpha() == 255)
+    return [name for name, _ in seen.most_common(count)]
+
+
+def _rule(qss, selector):
+    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", qss)
+    assert match, selector
+    return " ".join(match.group(1).split())
+
+
+class SettingsNavTests(_Base):
+    def _dialog(self, tmp):
+        sm = SettingsManager(settings_path=str(tmp / "config.json"))
+        data = sm.load_settings()
+        data.update(theme="dark", language="tr")
+        sm.save_settings(data)
+        parent = QWidget()
+        self.addCleanup(parent.deleteLater)
+        dialog = mw.SettingsDialog(parent, sm, ThemeManager(self.qapp), mock.Mock(), None)
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    def test_sidebar_has_checkable_nav_buttons_with_colored_icons(self):
+        from src.gui.toolbar_icons import menu_icon
+
+        with tempfile.TemporaryDirectory() as raw, mock.patch.object(startup, "is_enabled", return_value=False):
+            dialog = self._dialog(pathlib.Path(raw))
+            self.assertEqual(dialog.sidebar.objectName(), "sidebar")
+            self.assertEqual([b.text() for b in dialog.nav_buttons], ["Genel", "Yedekleme", "Güncellemeler"])
+            self.assertEqual(dialog.stack.count(), 3)
+            for btn, name in zip(dialog.nav_buttons, ("settings", "backup", "update")):
+                self.assertEqual(btn.objectName(), "nav_btn")
+                self.assertTrue(btn.isCheckable() and btn.autoExclusive())
+                btn.ensurePolished()   # stil sayfası uygulandıktan sonra da 38 px (genel düğmenin 32 px sınırı ezmesin)
+                self.assertEqual((btn.minimumHeight(), btn.maximumHeight()), (38, 38))
+                self.assertTrue(_same_icon(btn.icon(), menu_icon(name)), name)
+            self.assertEqual([b.isChecked() for b in dialog.nav_buttons], [True, False, False])
+            dialog.nav_buttons[2].click()
+            self.assertEqual(dialog.stack.currentIndex(), 2)
+            self.assertEqual([b.isChecked() for b in dialog.nav_buttons], [False, False, True])
+            # kartlar sayfalara dağıldı: güncelleme düğmesi Güncellemeler sayfasında
+            self.assertTrue(dialog.stack.widget(2).isAncestorOf(dialog.check_update_btn))
+            self.assertTrue(dialog.stack.widget(0).isAncestorOf(dialog.theme_combo))
+            self.assertGreaterEqual(dialog.sidebar.width(), 150)
+
+    def test_nav_rules_match_lumina(self):
+        from src.utils.theme_manager import _build_palette, _build_qss
+
+        for dark, accent in ((True, "violet"), (False, "rose"), (True, "yellow"), (False, "cyan")):
+            p = _build_palette(dark, accent)
+            qss = _build_qss(p)
+            base = _rule(qss, "QPushButton#nav_btn")
+            for decl in ("padding-left: 7px;", "border: none;", "border-left: 3px solid transparent;",
+                         "border-radius: 6px;", f"color: {p['text_muted']};", "min-height: 38px;", "max-height: 38px;"):
+                self.assertIn(decl, base)
+            checked = _rule(qss, "QPushButton#nav_btn:checked")
+            tint = re.search(r"background-color: (#[0-9a-fA-F]{6});", checked).group(1)
+            ink = re.search(r"(?<!-)color: (#[0-9a-fA-F]{6});", checked).group(1)
+            self.assertTrue(_close(tint, _lumina_mix(p["surface"], p["accent"], 0.16 if dark else 0.13)), (tint, accent))
+            self.assertGreaterEqual(_lumina_contrast(ink, tint), 4.5, (ink, tint))
+            if _lumina_contrast(p["accent_hi"] if dark else p["accent2"], tint) >= 4.5:
+                self.assertEqual(ink.lower(), (p["accent_hi"] if dark else p["accent2"]).lower())
+            self.assertIn(f"border-left: 3px solid {p['accent']};", checked)
+            self.assertIn("font-weight: 700;", checked)
+            self.assertLess(qss.index("QPushButton#nav_btn:hover"), qss.index("QPushButton#nav_btn:checked"))
+
+
+class MenuIconTableTests(_Base):
+    """Renk anlamla gelir (Lumina `MENU_PALETTE`): ayarlar mor, güncelle zümrüt, çıkış/sil kırmızı, göz/kılavuz çivit,
+    klasör amber; mavi/gök aile (bilgi, küre, kopya, belge) seçili vurguyu izler."""
+
+    FIXED = {"settings": "#8b5cf6", "update": "#10b981", "exit": "#ef4444", "view": "#7c7ff5", "guide": "#7c7ff5",
+             "trash": "#ef4444", "folder": "#fcd34d", "backup": "#d97706", "add": "#22c55e", "trim": "#22c55e",
+             "adjust": "#f97316", "send": "#14b8a6", "network": "#06b6d4", "open_with": "#a855f7",
+             "rename": "#f59e0b", "star": "#eab308", "bolt": "#eab308", "pause": "#f59e0b", "play": "#22c55e"}
+
+    def test_same_meaning_same_color(self):
+        from src.gui.toolbar_icons import MENU_ICON_NAMES, menu_icon
+
+        self.assertLessEqual(set(self.FIXED), set(MENU_ICON_NAMES))
+        for name, color in self.FIXED.items():
+            self.assertIn(color, _top_colors(menu_icon(name)), name)
+
+    def test_blue_family_follows_the_accent(self):
+        from src.gui.toolbar_icons import menu_icon
+        from src.utils.theme_manager import DEFAULT_ACCENT
+
+        manager = ThemeManager(self.qapp)
+        self.addCleanup(manager.set_theme, "dark", DEFAULT_ACCENT)
+        for key in ("rose", "green"):
+            manager.set_theme("dark", key)
+            self.assertEqual(_top_colors(menu_icon("info"), count=1), [ACCENTS[key]["accent"].lower()], key)
+            self.assertEqual(_top_colors(menu_icon("settings"), count=1), ["#8b5cf6"], "mor dişli vurguyu izlemez")
 
 
 if __name__ == "__main__":

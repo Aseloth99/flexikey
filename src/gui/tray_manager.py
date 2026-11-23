@@ -7,9 +7,8 @@ from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QCursor, QGuiApplication, QActionGroup
 from PyQt6.QtCore import QObject, Qt, QPoint, QSize, QTimer
 
-from src.gui.toolbar_icons import toolbar_icon
+from src.gui.toolbar_icons import menu_icon
 from src.utils.helpers import get_application_path
-from src.utils.theme_manager import accent_hex
 
 
 def restore_window(window) -> None:
@@ -53,9 +52,7 @@ class TrayManager(QObject):
         """Tepsi menüsünü oluştur"""
         from src.utils.locales import get_active_language, language_choices, t
         from src.utils.theme_manager import (
-            create_theme_system_icon, create_theme_dark_icon, create_theme_light_icon,
-            create_language_icon, create_globe_icon, create_settings_gear_icon, create_eye_icon,
-            create_door_exit_icon, create_bolt_icon,
+            create_theme_system_icon, create_theme_dark_icon, create_theme_light_icon, create_language_icon,
         )
 
         settings = self.main_window.settings_manager.load_settings()
@@ -66,7 +63,9 @@ class TrayManager(QObject):
 
         # En üstte "Güncelle · vX" (kalın, simgeli) ve altında ayırıcı; yalnızca güncelleme bekliyorsa görünür.
         # Tıklayınca doğrudan kurmaz: güncelleme penceresini açar (sürüm notları, boyut, "Şimdi Güncelle").
-        self.update_action = QAction(toolbar_icon("update", accent_hex()), "", menu)
+        # Renkli menü simgeleri (Lumina ⋯ menüsüyle aynı anlam/renk): güncelle yeşil, göster çivit göz, ayarlar mor dişli,
+        # dil vurgu küre, hızlı eylemler sarı şimşek, çıkış kırmızı kapı. Tema alt menüsü kendi tema simgesini korur.
+        self.update_action = QAction(menu_icon("update"), "", menu)
         update_font = self.update_action.font()
         update_font.setBold(True)
         self.update_action.setFont(update_font)
@@ -77,11 +76,11 @@ class TrayManager(QObject):
 
         # Göster/Gizle: pencere durumuna göre DİNAMİK (menü her açılışta yeniden okunur)
         self.show_action = QAction(
-            create_eye_icon(), t("tray_hide", lang) if self.main_window.isVisible() else t("tray_show", lang), menu)
+            menu_icon("view"), t("tray_hide", lang) if self.main_window.isVisible() else t("tray_show", lang), menu)
         self.show_action.triggered.connect(self.toggle_window)
         menu.addAction(self.show_action)
 
-        self.settings_action = QAction(create_settings_gear_icon(), t("settings", lang), menu)
+        self.settings_action = QAction(menu_icon("settings"), t("settings", lang), menu)
         self.settings_action.triggered.connect(self.main_window.show_settings)
         menu.addAction(self.settings_action)
         
@@ -111,7 +110,7 @@ class TrayManager(QObject):
         self.update_theme_menu()
 
         self.lang_menu = menu.addMenu(t("language", lang))
-        self.lang_menu.setIcon(create_globe_icon())
+        self.lang_menu.setIcon(menu_icon("globe"))
         self.lang_group = QActionGroup(menu)
         self.lang_group.setExclusive(True)
 
@@ -128,7 +127,7 @@ class TrayManager(QObject):
         menu.addSeparator()
         
         self.quick_menu = menu.addMenu(t("tray_quick_actions", lang))
-        self.quick_menu.setIcon(create_bolt_icon())
+        self.quick_menu.setIcon(menu_icon("bolt"))
         
         self.disable_all_action = QAction(t("tray_disable_all", lang), menu)
         self.disable_all_action.triggered.connect(self.disable_all_hotkeys)
@@ -140,7 +139,7 @@ class TrayManager(QObject):
         
         menu.addSeparator()
 
-        self.exit_action = QAction(create_door_exit_icon("#ef4444"), t("tray_exit", lang), menu)
+        self.exit_action = QAction(menu_icon("exit"), t("tray_exit", lang), menu)
         self.exit_action.triggered.connect(self.exit_application)
         menu.addAction(self.exit_action)
 
@@ -236,18 +235,12 @@ class TrayManager(QObject):
         self.show_action.setText(t("tray_hide", lang) if self.main_window.isVisible() else t("tray_show", lang))
 
     def refresh_icons(self, *_):
-        """Vurgu/tema değişince vurguya bağlı menü simgelerini yeniden boyar."""
-        from src.utils.theme_manager import create_bolt_icon, create_eye_icon, create_globe_icon, create_settings_gear_icon
-        if self.update_action is not None:
-            self.update_action.setIcon(toolbar_icon("update", accent_hex()))
-        for name, make in (("show_action", create_eye_icon), ("settings_action", create_settings_gear_icon)):
-            action = getattr(self, name, None)
-            if action is not None:
-                action.setIcon(make())
-        for name, make in (("lang_menu", create_globe_icon), ("quick_menu", create_bolt_icon)):
-            menu = getattr(self, name, None)
-            if menu is not None:
-                menu.setIcon(make())
+        """Vurgu/tema değişince menü simgelerini yeniden boyar (mavi/gök aileden olanlar vurguyu izler)."""
+        for name, icon in (("update_action", "update"), ("show_action", "view"), ("settings_action", "settings"),
+                           ("lang_menu", "globe"), ("quick_menu", "bolt"), ("exit_action", "exit")):
+            item = getattr(self, name, None)
+            if item is not None:
+                item.setIcon(menu_icon(icon))
         if hasattr(self, "system_action"):
             self.update_theme_menu()
         if hasattr(self, "_lang_actions"):
@@ -332,7 +325,7 @@ class TrayManager(QObject):
 
     def update_language_menu(self):
         from src.utils.locales import AUTO_LANGUAGE, get_active_language, language_choices
-        from src.utils.theme_manager import create_language_icon, create_globe_icon
+        from src.utils.theme_manager import create_language_icon
         settings = self.main_window.settings_manager.load_settings()
         choice = settings.get("language", AUTO_LANGUAGE)
         lang = get_active_language(settings)
@@ -342,7 +335,7 @@ class TrayManager(QObject):
             act.setText(labels.get(code, code))
             act.setIcon(create_language_icon(code))
         if hasattr(self, "lang_menu"):
-            self.lang_menu.setIcon(create_globe_icon())
+            self.lang_menu.setIcon(menu_icon("globe"))
 
     def retranslate(self, lang: str):
         from src.utils.locales import t

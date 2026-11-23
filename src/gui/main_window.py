@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QLabel, QDialog,
     QFormLayout, QCheckBox, QTextEdit,
     QFrame, QFileDialog,
-    QMenu, QSizePolicy, QApplication, QScrollArea, QGridLayout, QButtonGroup
+    QMenu, QSizePolicy, QApplication, QScrollArea, QGridLayout, QButtonGroup, QStackedWidget
 )
-from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QEvent
-from PyQt6.QtGui import QIcon, QKeySequence, QAction, QKeyEvent, QActionGroup, QCursor, QShortcut
+from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QEvent, QMimeData
+from PyQt6.QtGui import QIcon, QKeySequence, QAction, QKeyEvent, QActionGroup, QCursor, QShortcut, QFont, QFontMetrics
 import sys
 import time
 from src.utils.locales import AUTO_LANGUAGE, get_active_language, install_qt_translations, language_choices, t
@@ -21,17 +21,17 @@ from src.utils.theme_manager import (
     create_theme_system_icon, create_theme_dark_icon, create_theme_light_icon,
     create_accent_swatch_icon, create_language_icon,
     create_globe_icon,
-    create_settings_gear_icon, create_book_help_icon, create_info_about_icon,
-    create_keyboard_icon, create_plus_icon, create_edit_pencil_icon,
-    create_exit_icon, apply_html_editor_style
+    create_settings_gear_icon,
+    create_keyboard_icon,
+    apply_html_editor_style
 )
 from src.gui.list_widgets import CardListWidget, HotkeyCard, ExpansionCard
 from src.gui.message_box import MessageBox
-from src.gui.hover_fix import settle_hover_after_menu
+from src.gui.hover_fix import settle_hover, settle_hover_after_menu
 from src.gui.toast import toast_for
 from src.gui import window_geometry
 
-from src.gui.toolbar_icons import strip_symbols, toolbar_icon
+from src.gui.toolbar_icons import menu_icon, strip_symbols, toolbar_icon
 from src.gui.command_icons import ACTION_GLYPHS, GROUP_GLYPHS, GlyphLabel, command_glyph, glyph_icon
 from src.gui.window_glyphs import MAXIMIZE, RESTORE, UPDATE, TitleGlyphButton, readable_accent
 from src.utils.helpers import format_shortcut_for_display
@@ -854,7 +854,7 @@ class SettingsDialog(QDialog):
         self.setModal(True)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(740)  # 560 + solda sekme çubuğu
         self.setMinimumHeight(0)
         
         self._drag_pos = None
@@ -869,6 +869,20 @@ class SettingsDialog(QDialog):
         super().showEvent(event)
         apply_window_rounding(self)
     
+    def _fit_sidebar(self):
+        """Seçili sekme kalın yazılır; en uzun ad kalınken de sığsın (Lumina ile aynı hesap)."""
+        font = QFont(self.nav_buttons[0].font())
+        font.setPixelSize(13)
+        font.setBold(True)
+        text = max(QFontMetrics(font).horizontalAdvance(b.text()) for b in self.nav_buttons)
+        # 8 + 8 kenar boşluğu + 2 çerçeve, 10 sol dolgu, 16 simge + 4 ara, 16 sağ dolgu, 8 nefes payı
+        self.sidebar.setFixedWidth(max(150, text + 72))
+
+    def _switch_tab(self, index):
+        self.stack.setCurrentIndex(index)
+        for i, btn in enumerate(self.nav_buttons):
+            btn.setChecked(i == index)
+
     def _cleanup_update_connection(self):
         self._checking_updates = False
         if hasattr(self, "update_check"):
@@ -932,12 +946,31 @@ class SettingsDialog(QDialog):
         title_bar.mouseReleaseEvent = self._title_mouse_release
         chrome_layout.addWidget(title_bar)
         
-        # İçerik Alanı
+        # İçerik Alanı — dört uygulamada aynı iskelet (Lumina): solda renkli simgeli sekmeler, sağda kart sayfaları
         body_widget = QWidget()
-        body_layout = QVBoxLayout(body_widget)
-        body_layout.setContentsMargins(16, 12, 16, 8)
-        body_layout.setSpacing(10)
-        
+        body_row = QHBoxLayout(body_widget)
+        body_row.setContentsMargins(16, 12, 16, 8)
+        body_row.setSpacing(12)
+
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("sidebar")
+        side_layout = QVBoxLayout(self.sidebar)
+        side_layout.setContentsMargins(8, 8, 8, 8)
+        side_layout.setSpacing(6)
+
+        self.stack = QStackedWidget()
+        self.stack.setObjectName("settingsStack")
+
+        def new_page():
+            page = QWidget()
+            layout = QVBoxLayout(page)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(10)
+            self.stack.addWidget(page)
+            return layout
+
+        body_layout = new_page()  # Genel: Görünüm + Davranış
+
         # ── 1. Görünüm & Tema Kartı ──
         appearance_card = QFrame()
         appearance_card.setObjectName("card_frame")
@@ -1045,7 +1078,9 @@ class SettingsDialog(QDialog):
         behavior_layout.addWidget(self.show_notif_check)
         
         body_layout.addWidget(behavior_card)
-        
+        body_layout.addStretch()
+        body_layout = new_page()  # Yedekleme
+
         # ── 3. Yedekleme & Aktarım Kartı ──
         backup_card = QFrame()
         backup_card.setObjectName("card_frame")
@@ -1091,7 +1126,9 @@ class SettingsDialog(QDialog):
         backup_layout.addLayout(backup_btn_row)
         
         body_layout.addWidget(backup_card)
-        
+        body_layout.addStretch()
+        body_layout = new_page()  # Güncellemeler
+
         # ── 4. Güncellemeler Kartı ──
         update_card = QFrame()
         update_card.setObjectName("card_frame")
@@ -1148,6 +1185,30 @@ class SettingsDialog(QDialog):
             self.update_checker.check_failed.connect(self.on_check_failed)
         
         body_layout.addWidget(update_card)
+        body_layout.addStretch()
+
+        self.nav_buttons = []
+        for index, (key, icon) in enumerate((
+            ("settings_general", "settings"),   # mor dişli
+            ("settings_backup", "backup"),      # kehribar arşiv
+            ("updates", "update"),              # yeşil oklar
+        )):
+            btn = QPushButton(t(key, self.lang), self.sidebar)
+            btn.setObjectName("nav_btn")
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.setFixedHeight(38)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn.setIcon(menu_icon(icon))
+            btn.clicked.connect(lambda _=False, i=index: self._switch_tab(i))
+            side_layout.addWidget(btn)
+            self.nav_buttons.append(btn)
+        side_layout.addStretch()
+        self._fit_sidebar()
+        self.nav_buttons[0].setChecked(True)
+
+        body_row.addWidget(self.sidebar)
+        body_row.addWidget(self.stack, 1)
         chrome_layout.addWidget(body_widget, 1)
         
         # ── Alt Butonlar (Sabit Footer) ──
@@ -2616,13 +2677,14 @@ class MainWindow(QMainWindow):
     
     def create_file_menu(self, menu):
         """Uygulama menüsü (ilk menü): yeni kısayol, yeni genişletme, çıkış"""
-        self.new_hotkey_action = QAction(create_plus_icon(), t("new_hotkey", self.lang), self)
+        # Renkli menü simgeleri (Lumina ⋯ menüsüyle aynı anlam/renk); başlık düğmeleri tek renk kalır
+        self.new_hotkey_action = QAction(menu_icon("add"), t("new_hotkey", self.lang), self)
         self.new_hotkey_action.setShortcut("Ctrl+N")
         self.new_hotkey_action.triggered.connect(self.add_hotkey)
         menu.addAction(self.new_hotkey_action)
         self.addAction(self.new_hotkey_action)
         
-        self.new_expansion_action = QAction(create_edit_pencil_icon(), t("new_expansion", self.lang), self)
+        self.new_expansion_action = QAction(menu_icon("rename"), t("new_expansion", self.lang), self)
         self.new_expansion_action.setShortcut("Ctrl+Shift+N")
         self.new_expansion_action.triggered.connect(self.add_expansion)
         menu.addAction(self.new_expansion_action)
@@ -2630,7 +2692,7 @@ class MainWindow(QMainWindow):
         
         menu.addSeparator()
         
-        self.exit_action = QAction(create_exit_icon(), t("exit", self.lang), self)
+        self.exit_action = QAction(menu_icon("exit"), t("exit", self.lang), self)
         # Alt+F4 pencereyi kapatır (tepsiye gizler); uygulamayı tamamen kapatmak yalnızca Ctrl+Q / Çıkış / tepsi menüsü.
         self.exit_action.setShortcut(QKeySequence("Ctrl+Q"))
         self.exit_action.triggered.connect(self.close_app)
@@ -2696,7 +2758,7 @@ class MainWindow(QMainWindow):
     
     def create_settings_help_menu(self, menu):
         """Ayarlar ve Yardım menüsü"""
-        self.settings_action = QAction(create_settings_gear_icon(), t("settings", self.lang), self)
+        self.settings_action = QAction(menu_icon("settings"), t("settings", self.lang), self)
         self.settings_action.setShortcut("Ctrl+,")
         self.settings_action.triggered.connect(self.show_settings)
         menu.addAction(self.settings_action)
@@ -2705,13 +2767,13 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         
         # Yardım bölümü
-        self.help_action = QAction(create_book_help_icon(), t("user_guide", self.lang), self)
+        self.help_action = QAction(menu_icon("guide"), t("user_guide", self.lang), self)
         self.help_action.setShortcut("F1")
         self.help_action.triggered.connect(self.show_help)
         menu.addAction(self.help_action)
         self.addAction(self.help_action)
         
-        self.about_action = QAction(create_info_about_icon(), t("about", self.lang), self)
+        self.about_action = QAction(menu_icon("info"), t("about", self.lang), self)
         self.about_action.triggered.connect(self.show_about)
         menu.addAction(self.about_action)
     
@@ -3374,7 +3436,7 @@ class MainWindow(QMainWindow):
 
         edit_btn = seg('seg', on_edit)
         toggle_btn = seg('seg', on_toggle)
-        delete_btn = seg('seg-danger', on_delete)
+        delete_btn = seg('seg', on_delete)  # kardeşleri gibi nötr; kırmızı yalnızca onay kutusundaki "Sil" düğmesinde
         for index, btn in enumerate((edit_btn, toggle_btn, delete_btn)):
             if index:
                 sep = QFrame()
@@ -3476,6 +3538,7 @@ class MainWindow(QMainWindow):
         self._selected_hotkey_row = -1
         self.hotkeys_list.selection_changed.connect(self._on_hotkey_selection_changed)
         self.hotkeys_list.reordered.connect(self._on_hotkeys_reordered)
+        self.hotkeys_list.context_menu_requested.connect(lambda row, pos: self._show_card_menu("hotkey", row, pos))
         layout.addWidget(self.hotkeys_list, 1)
         
         return widget
@@ -3497,6 +3560,7 @@ class MainWindow(QMainWindow):
         self._selected_expansion_row = -1
         self.expansions_list.selection_changed.connect(self._on_expansion_selection_changed)
         self.expansions_list.reordered.connect(self._on_expansions_reordered)
+        self.expansions_list.context_menu_requested.connect(lambda row, pos: self._show_card_menu("exp", row, pos))
         layout.addWidget(self.expansions_list, 1)
         
         return widget
@@ -3538,7 +3602,7 @@ class MainWindow(QMainWindow):
             self.exit_action.setText(t("exit", lang))
         if hasattr(self, 'settings_action'):
             self.settings_action.setText(t("settings", lang))
-            self.settings_action.setIcon(create_settings_gear_icon())
+            self.settings_action.setIcon(menu_icon("settings"))
         if hasattr(self, 'lang_menu'):
             self.lang_menu.setTitle(t('language', lang))
         if hasattr(self, 'color_menu_btn'):
@@ -3956,8 +4020,8 @@ class MainWindow(QMainWindow):
         self._reveal_row("hotkey", row)
         _feedback(self, t("hotkey_restored", self.lang).format(label))
     
-    def toggle_hotkey(self):
-        row = self._resolve_hotkey_row()
+    def toggle_hotkey(self, row=None):
+        row = self._resolve_hotkey_row(row)
         if row < 0:
             return   # seçim yok: düğmeler pasif, diyalog açılmaz
 
@@ -4066,8 +4130,8 @@ class MainWindow(QMainWindow):
         self._reveal_row("exp", row)
         _feedback(self, t("expansion_restored", self.lang).format(trigger))
     
-    def toggle_expansion(self):
-        row = self._resolve_expansion_row()
+    def toggle_expansion(self, row=None):
+        row = self._resolve_expansion_row(row)
         if row < 0:
             return   # seçim yok: düğmeler pasif, diyalog açılmaz
 
@@ -4095,7 +4159,81 @@ class MainWindow(QMainWindow):
             self.toggle_hotkey()
         elif self.tabs.currentIndex() == 1:
             self.toggle_expansion()
-    
+
+    # ------------------------------------------------------------------ kartın sağ tık menüsü
+    def _card_record(self, prefix: str, row: int) -> dict | None:
+        items = self.settings_manager.load_settings().get('hotkeys' if prefix == "hotkey" else 'expansions', [])
+        return items[row] if 0 <= row < len(items) else None
+
+    def card_menu(self, prefix: str, row: int) -> QMenu | None:
+        """Kartın menüsü: Düzenle · Pasif Yap / Aktif Yap · Kopyala · — · Sil.
+
+        Eylemler araç çubuğu, çift tık ve Delete tuşuyla aynı yöntemlere gider (silme onayı dahil). Gizli öğenin
+        değeri panoya çıkmaz (gizli metin hep klavyeden yazılır, pano geçmişine düşmez): Kopyala pasif kalır."""
+        record = self._card_record(prefix, row)
+        if record is None:
+            return None
+        if prefix == "hotkey":
+            edit, toggle, delete = self.edit_hotkey, self.toggle_hotkey, self.delete_hotkey
+        else:
+            edit, toggle, delete = self.edit_expansion, self.toggle_expansion, self.delete_expansion
+        menu = QMenu(self)
+        menu.setObjectName("card_menu")
+        menu.setToolTipsVisible(True)
+        menu.addAction(menu_icon("rename"), strip_symbols(t("btn_edit", self.lang))).triggered.connect(
+            lambda *_: edit(row))
+        state_key = "card_disable" if record.get('enabled', True) else "card_enable"
+        menu.addAction(menu_icon("bolt"), t(state_key, self.lang)).triggered.connect(lambda *_: toggle(row))
+        copy_action = menu.addAction(menu_icon("copy"), t("card_copy", self.lang))
+        if is_secret_record(record):
+            copy_action.setEnabled(False)
+            copy_action.setToolTip(t("card_copy_secret_tip", self.lang))
+        else:
+            copy_action.triggered.connect(lambda *_: self.copy_item(prefix, row))
+        menu.addSeparator()
+        menu.addAction(menu_icon("trash"), strip_symbols(t("btn_delete", self.lang))).triggered.connect(
+            lambda *_: delete(row))
+        return menu
+
+    def _show_card_menu(self, prefix: str, row: int, global_pos):
+        menu = self.card_menu(prefix, row)
+        if menu is None:
+            return
+        listing = self._list_for(prefix)
+        card = listing.card_at(row)
+        try:
+            menu.exec(global_pos)
+        finally:
+            menu.deleteLater()
+        if card is not None and listing.card_at(row) is card:
+            settle_hover(card)  # menü fareyi tuttu: dışarı tıklanıp kapanınca kart üzerine gelinmiş gibi kalmasın
+
+    def copy_item(self, prefix: str, row: int) -> bool:
+        """Kartın içeriğini (kartta kısaltılmış görünenin tamamı) panoya kopyalar; biçimli metin biçimiyle gider.
+        Gizli öğe kopyalanmaz. Bildirimde yalnızca kısayol / tetikleyici adı olur, içerik olmaz."""
+        record = self._card_record(prefix, row)
+        if record is None or is_secret_record(record):
+            return False
+        if prefix == "hotkey":
+            value = record.get('action_value', '') or ''
+            if record.get('action_type') == 'command':
+                value = self._format_command_display(value)
+            rich = bool(record.get('is_rich', False) and record.get('action_type') == 'text')
+            message = t("hotkey_copied", self.lang).format(format_shortcut_for_display(record.get('shortcut', '')))
+        else:
+            value = record.get('replacement', '') or ''
+            rich = bool(record.get('is_rich', False))
+            message = t("expansion_copied", self.lang).format(record.get('trigger', ''))
+        mime = QMimeData()
+        if rich:
+            mime.setHtml(value)
+            mime.setText(self._expansion_plain_text({'replacement': value, 'is_rich': True}))
+        else:
+            mime.setText(value)
+        QApplication.clipboard().setMimeData(mime)
+        _feedback(self, message)
+        return True
+
     def apply_theme(self, theme_name):
         """Tema uygula ve kaydet"""
         with self.settings_manager.transaction() as settings:
@@ -4210,12 +4348,12 @@ class MainWindow(QMainWindow):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setIcon(make())
-        for name, make in (('new_hotkey_action', create_plus_icon), ('new_expansion_action', create_edit_pencil_icon),
-                           ('settings_action', create_settings_gear_icon), ('help_action', create_book_help_icon),
-                           ('about_action', create_info_about_icon)):
+        # menü eylemleri: renkli anlam simgeleri (mavi/gök aileden olanlar vurguyu izler)
+        for name, icon in (('new_hotkey_action', 'add'), ('new_expansion_action', 'rename'), ('exit_action', 'exit'),
+                           ('settings_action', 'settings'), ('help_action', 'guide'), ('about_action', 'info')):
             action = getattr(self, name, None)
             if action is not None:
-                action.setIcon(make())
+                action.setIcon(menu_icon(icon))
         self._apply_tab_icons()
         if hasattr(self, 'theme_system_act'):
             self._sync_theme_menu()

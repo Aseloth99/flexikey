@@ -420,6 +420,7 @@ class CardListWidget(QScrollArea):
     selection_changed = pyqtSignal(int)
     reordered = pyqtSignal(int, int)
     delete_requested = pyqtSignal(int)  # Delete tuşu (seçili kart)
+    context_menu_requested = pyqtSignal(int, QPoint)  # sağ tık / Menü tuşu / Shift+F10: kart sırası, menünün global yeri
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -537,6 +538,9 @@ class CardListWidget(QScrollArea):
     def count(self) -> int:
         return len(self._cards)
 
+    def card_at(self, index: int):
+        return self._cards[index] if 0 <= index < len(self._cards) else None
+
     # ------------------------------------------------------------------ süzgeç
     def _visible_cards(self) -> list[_BaseCard]:
         if not self._filter:
@@ -599,6 +603,10 @@ class CardListWidget(QScrollArea):
         Enter düzenler (activated), Delete siler (delete_requested). Boşluk ana pencereye kalır (aktif/pasif)."""
         key = event.key()
         visible = self.visible_indices()
+        if key == Qt.Key.Key_F10 and event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
+            self._keyboard_context_menu()  # Shift+F10: Menü tuşunun klavye karşılığı
+            event.accept()
+            return
         if not visible or event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
             super().keyPressEvent(event)
             return
@@ -636,6 +644,36 @@ class CardListWidget(QScrollArea):
         if index != self._selected_index:
             self._select_index(index)
         self.scroll_to(index)
+
+    # ------------------------------------------------------------------ sağ tık menüsü
+    def contextMenuEvent(self, event):  # noqa: N802
+        """Menü tuşu seçili kartın menüsünü açar; kartların dışındaki boşlukta sağ tık bir şey açmaz."""
+        if event.reason() == event.Reason.Keyboard:
+            self._keyboard_context_menu()
+            event.accept()
+            return
+        event.ignore()
+
+    def _keyboard_context_menu(self) -> bool:
+        index = self.selected_index()
+        if index < 0 or self._drag:
+            return False
+        card = self._cards[index]
+        self.scroll_to(index)
+        # menü kartın sol üstüne yakın açılır (fare yerine): klavyeyle de neyin menüsü olduğu belli olsun
+        self.context_menu_requested.emit(index, card.mapToGlobal(QPoint(12, min(card.height(), 24))))
+        return True
+
+    def _card_context_menu(self, card: _BaseCard, global_pos: QPoint):
+        """Sağ tık: liste alışkanlığı gibi altta kalan kart seçilir (zaten seçiliyse seçim değişmez), sonra menü."""
+        if self._drag:
+            return
+        index = self._cards.index(card)
+        self._press = None
+        if index != self._selected_index:
+            self._select_index(index)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.context_menu_requested.emit(index, global_pos)
 
     def scroll_to(self, index: int):
         """Kartı görünür alana kaydırır (yerleşim bitmemişse bir olay turu sonra yine)."""
@@ -804,6 +842,13 @@ class CardListWidget(QScrollArea):
             if et in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick, QEvent.Type.KeyPress):
                 return True
         elif isinstance(watched, _BaseCard) and watched in getattr(self, "_cards", ()):
+            if et == QEvent.Type.ContextMenu:
+                if event.reason() == event.Reason.Keyboard:
+                    self._keyboard_context_menu()
+                else:
+                    self._card_context_menu(watched, event.globalPos())
+                event.accept()
+                return True
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._press = (watched, event.globalPosition().toPoint())
             elif et == QEvent.Type.MouseButtonRelease:
