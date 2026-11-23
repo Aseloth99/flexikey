@@ -714,7 +714,13 @@ class CardMenuTests(_Base):
         self.assertTrue(any(reddish(c) for c in region(delete, 0, 36)), "çöp simgesi kırmızı kalır")
         text_sil, text_edit = region(delete, 40, 10_000), region(edit, 40, 10_000)
         self.assertFalse([c for c in text_sil if reddish(c)], "Sil yazısı kırmızı değil")
-        self.assertEqual(text_sil, text_edit, "Sil ile Düzenle yazısı aynı renk")
+
+        def ink(colors):
+            # Gerçek harfler kenar yumuşatmalı çizilir: ara tonlar harfe göre değişir, en koyu ton yazının rengidir.
+            from PyQt6.QtGui import QColor
+            return min(colors, key=lambda name: QColor(name).lightness())
+
+        self.assertEqual(ink(text_sil), ink(text_edit), "Sil ile Düzenle yazısı aynı renk")
 
     def test_right_click_selects_the_card_under_the_cursor_and_opens_its_menu(self):
         from PyQt6.QtCore import QPoint

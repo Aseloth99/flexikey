@@ -828,5 +828,9 @@ class FlexiKeyApp:
             self._local_server.close()
         except Exception:
             pass
+        try:
+            self.update_checker.stop()  # süren denetim (yeniden deneme beklemesi dahil) bitmeden QThread yok edilmesin
+        except Exception:
+            pass
         self._teardown_qt_objects()
         return code

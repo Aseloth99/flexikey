@@ -11,6 +11,8 @@ import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if os.name == "nt":  # Ekransız Qt, Windows'ta yazı tiplerini kendi bulamaz: her harf 12 px'lik kutu sayılır.
+    os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from PyQt6.QtWidgets import QApplication, QLabel
