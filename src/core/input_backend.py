@@ -307,11 +307,36 @@ class WindowsKeyboardBackend(InputBackend):
     paste_keys = "ctrl+v"
 
     def __init__(self, keyboard_module: Any = None, pynput_module: Any = None):
-        if keyboard_module is None:
+        real_library = keyboard_module is None
+        if real_library:
             import keyboard as keyboard_module      # yalnızca Windows'ta çağrılır (create_backend)
         self.kb = keyboard_module
         self._pynput = pynput_module
         self._pynput_tried = pynput_module is not None
+        if real_library:
+            self.install_layout_names()
+
+    def install_layout_names(self) -> bool:
+        """Kısaltmalardaki tuş adları öndeki pencerenin klavye düzenine göre üretilsin (win_layout_names).
+
+        Yoksa oturum açılışında ABD düzeniyle kurulan ad tablosu Türkçe Q'da "i"yi "'" yapar ve kısaltmalar
+        program yeniden açılana dek tetiklenmez. Kurulamazsa eski davranış sürer, bir kez loglanır."""
+        from src.core import win_layout_names
+        from src.utils.helpers import log_info
+
+        def on_change(old, new):
+            log_info(f"Klavye düzeni (öndeki pencere): {win_layout_names.layout_text(old)} -> "
+                     f"{win_layout_names.layout_text(new)}")
+        try:
+            if win_layout_names.install(self.kb, on_change=on_change):
+                table = getattr(getattr(self.kb, '_os_keyboard', None), 'to_name', None)
+                log_info("Kısaltma tuş adları öndeki pencerenin klavye düzenine göre okunuyor; açılıştaki düzen: "
+                         + win_layout_names.layout_text(getattr(table, 'layout', 0)))
+                return True
+            _warn_private_api_once('_os_keyboard', 'eksik: ' + ', '.join(win_layout_names.missing_names(self.kb)))
+        except Exception as exc:
+            _warn_private_api_once('_os_keyboard(klavye duzeni adlari)', repr(exc))
+        return False
 
     # küresel kısayollar
     def add_hotkey(self, normalized, callback, suppress=False, timeout=0.1):
